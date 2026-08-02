@@ -41,5 +41,9 @@ apps/desktop/release/
 *.sqlite3
 *.db
 
+# Prettier
 .prettierrc
 .prettierignore
+
+# Local Agentic Environment
+docs/
