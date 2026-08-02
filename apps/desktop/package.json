@@ -1,0 +1,51 @@
+{
+  "name": "@fth/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Freshdesk Ticket Helper Electron desktop application",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "pack": "electron-builder --dir",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fth/protocol": "0.1.0",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "37.10.3",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "com.freshdesk.tickethelper",
+    "productName": "Freshdesk Ticket Helper",
+    "electronVersion": "37.10.3",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": ["dir"],
+      "category": "Office"
+    }
+  }
+}

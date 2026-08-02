@@ -1,0 +1,25 @@
+/** Shows exactly what sanitized context would be sent to the VPS. */
+import type { SanitizedContext } from '@fth/protocol';
+
+export function SanitizerPreview({ context }: { context: SanitizedContext | null }) {
+  return (
+    <section className="panel">
+      <h2>Sanitized AI context preview</h2>
+      <p className="muted">
+        This is the exact text prepared for WSS transmission. Raw ticket HTML is never used as a
+        system prompt.
+      </p>
+      {!context ? (
+        <p className="muted">Open a ticket to generate a sanitizer preview.</p>
+      ) : (
+        <>
+          <p className="muted">
+            Revision {context.contextRevision}
+            {context.warnings.length ? ` · ${context.warnings.join(' ')}` : ''}
+          </p>
+          <pre className="preview-block">{context.previewText}</pre>
+        </>
+      )}
+    </section>
+  );
+}

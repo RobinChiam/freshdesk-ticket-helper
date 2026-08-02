@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "types": ["node"],
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/database/**/*.ts",
+    "src/freshdesk/**/*.ts",
+    "src/sanitizer/**/*.ts",
+    "src/websocket/**/*.ts",
+    "tests/**/*.ts",
+    "electron.vite.config.ts",
+    "vitest.config.ts"
+  ]
+}

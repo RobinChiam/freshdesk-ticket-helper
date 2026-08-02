@@ -1,19 +1,80 @@
-# Introduction
+# Freshdesk Ticket Helper
 
-This is an Electron Application that connects...
+Secure Electron desktop app for Freshdesk agents: open a ticket, review its full conversation thread (including private notes when permitted), sanitize content locally, and chat about the ticket through an authenticated WebSocket Secure AI broker on a VPS.
 
-- FreshDesk API
-- Antigravity CLI running on a 24/7 VPS
+## What this prototype does
 
-The Application should....
+- First-run configuration for Freshdesk URL/API key and public WSS URL/device token
+- OS credential vault storage for secrets (refuses insecure Linux `basic_text` fallback)
+- Ticket ID / URL parsing with host allowlisting
+- Freshdesk API v2 ticket + paginated conversation fetch (read-only)
+- Local sanitizer with redaction preview
+- Typed WSS client with mock broker mode
+- Recent tickets in local SQLite
+- No Freshdesk writes and no SSH from the desktop app
 
-- Provide a chat interface
-- Provide a summary of the ticket
-- Name Antigravity Sessions using the ticket number.
-- Be able to restore the stdin/stdout of the session to the correct ticket number.
+## Architecture (short)
 
-The goals and objectives are...
+```
+Renderer (React)  --typed preload-->  Main process
+                                      ├─ Freshdesk HTTPS
+                                      ├─ WSS client / mock broker
+                                      ├─ SQLite (non-secret state)
+                                      └─ safeStorage vault (secrets)
+```
 
-- The application should allow the user to "talk" to the ticket using AI
-- The content of the ticket should be sanitized before it is sent to the AI as a System Prompt to provide context without exposing sensitive information.
-- Enable better understanding of support tickets and gather existing knowledgebases to help with quicker investigation and ticket resolution. 
+Shared Zod schemas live in `packages/protocol`.
+
+## Prerequisites
+
+- Node.js 20.19+ (22+ recommended)
+- npm 10+
+- Linux: a working secret store (libsecret / KWallet) for real credential storage
+
+## Commands
+
+```bash
+npm install
+npm run build -w @fth/protocol
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run dev
+```
+
+Packaging (directory output):
+
+```bash
+npm run pack
+```
+
+## Security highlights
+
+- `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`
+- Restrictive CSP; no remote module; no generic shell/FS preload APIs
+- Secrets never stored in SQLite, localStorage, or source-controlled env files
+- Production builds refuse silent `ws://` fallback
+- The app never SSHs into the VPS
+
+Administrator SSH (outside the app only):
+
+```bash
+ssh -p <SSH_PORT> -i <LOCAL_PRIVATE_KEY_PATH> <SSH_USER>@<VPS_HOST>
+```
+
+Never paste an SSH private key into the application.
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/SECURITY.md](docs/SECURITY.md)
+- [docs/PROTOCOL.md](docs/PROTOCOL.md)
+- [docs/HANDOFF.md](docs/HANDOFF.md)
+- [docs/TRANSCRIPT.md](docs/TRANSCRIPT.md)
+- [AGENT.md](AGENT.md) (canonical agent instructions)
+- [AGENTS.md](AGENTS.md) (compatibility pointer)
+
+## Offline demo
+
+With mock broker enabled (default), open ticket input `demo` to load a local sample ticket and exercise sanitizer + chat without Freshdesk credentials.

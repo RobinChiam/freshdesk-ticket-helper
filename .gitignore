@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+release/
+*.tsbuildinfo
+
+# Logs and caches
+*.log
+npm-debug.log*
+.eslintcache
+.vite/
+coverage/
+
+# Environment and secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials.json
+secrets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Electron / packaging
+apps/desktop/dist/
+apps/desktop/out/
+apps/desktop/release/
+
+# Local SQLite databases (non-secret state still stays local)
+*.sqlite
+*.sqlite3
+*.db
