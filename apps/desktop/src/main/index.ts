@@ -1,6 +1,9 @@
 /**
  * Electron main process entry.
- * Owns Freshdesk HTTP, WSS, SQLite, and the secret vault — never exposed to the renderer.
+ * Owns Freshdesk HTTPS, WSS, SQLite, and the secret vault — never exposed to the renderer.
+ *
+ * SecretVault (tracked TypeScript in main/secrets/) encrypts runtime values into
+ * userData/secrets.vault (untracked). Only the runtime vault file is sensitive.
  */
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
@@ -15,7 +18,7 @@ import {
 import { applyContentSecurityPolicy, hardenSessionPermissions } from './security.js';
 import { SecretVault } from './secrets/vault.js';
 import { loadSettings } from './settings/store.js';
-import { createMainWindow } from './window.js';
+import { createAndLoadMainWindow } from './window.js';
 
 // Prevent multiple instances from sharing/corrupting local state.
 const gotLock = app.requestSingleInstanceLock();
@@ -34,6 +37,7 @@ app.whenReady().then(async () => {
 
   const userData = app.getPath('userData');
   db = openAppDatabase(join(userData, 'app-state.sqlite'));
+  // Runtime encrypted blob — never commit this file; path is outside the repo under userData.
   vault = new SecretVault(join(userData, 'secrets.vault'));
 
   const settings = loadSettings(db);
@@ -54,23 +58,26 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
   });
 
-  mainWindow = createMainWindow();
-
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    await mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
-  } else {
-    await mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
-  }
+  mainWindow = await createAndLoadMainWindow();
 
   // Auto-connect mock broker so the chat panel is usable on first run.
   if (settings.useMockBroker) {
     await broker.connect();
   }
 
+  // Optional Electron-native smoke path used by tests/electron-smoke.test.ts.
+  if (process.env['FTH_SMOKE_RESULT_PATH']) {
+    const { runStartupSmokeAndExit } = await import('./smokeProbe.js');
+    await runStartupSmokeAndExit(mainWindow, process.env['FTH_SMOKE_RESULT_PATH']);
+    return;
+  }
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createMainWindow();
-    }
+    void (async () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        mainWindow = await createAndLoadMainWindow();
+      }
+    })();
   });
 });
 

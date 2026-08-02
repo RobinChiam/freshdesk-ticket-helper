@@ -62,8 +62,8 @@ export function parseTicketInput(
     };
   }
 
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    return { ok: false, error: 'Ticket URL must use http or https.' };
+  if (url.protocol !== 'https:') {
+    return { ok: false, error: 'Ticket URL must use https://.' };
   }
 
   // URL credentials (user:pass@host) must never be accepted — they can leak into logs.
@@ -98,11 +98,11 @@ export function parseTicketInput(
   };
 }
 
-/** Normalize account URL into hostname for API calls and allowlisting. */
+/** Normalize account URL into hostname for API calls and allowlisting (https only). */
 export function extractFreshdeskHostname(accountUrl: string): string | null {
   try {
     const url = new URL(accountUrl);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    if (url.protocol !== 'https:') {
       return null;
     }
     if (url.username || url.password) {
@@ -136,9 +136,5 @@ function buildAllowedHosts(apiHostname: string, extra: string[] = []): Set<strin
 
 /** Exported for documentation/tests — the supported path patterns. */
 export function supportedTicketPathPatterns(): string[] {
-  return [
-    '/a/tickets/{id}',
-    '/helpdesk/tickets/{id}',
-    '/tickets/{id}',
-  ];
+  return ['/a/tickets/{id}', '/helpdesk/tickets/{id}', '/tickets/{id}'];
 }

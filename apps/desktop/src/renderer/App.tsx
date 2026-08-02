@@ -1,5 +1,10 @@
 /**
  * Root application shell: first-run settings, ticket workspace, and connection status.
+ *
+ * Ticket/context identity invariant: sanitized context and chat state are bound to the
+ * current ticketKey. On ticket change we clear previous context immediately and only
+ * enable send when sanitized.ticketKey matches the loaded ticket. Main-process schema
+ * also rejects mismatched chat payloads.
  */
 import { useEffect, useState } from 'react';
 
@@ -19,6 +24,8 @@ import { SanitizerPreview } from './components/SanitizerPreview';
 import { SettingsForm } from './components/SettingsForm';
 import { TicketTimeline } from './components/TicketTimeline';
 import { StatusBanner } from './components/StatusBanner';
+import { TicketWorkspace } from './components/TicketWorkspace';
+import { selectSanitizedForTicket } from './ticketContextGuard';
 
 type LoadState = 'loading' | 'ready' | 'error';
 
@@ -36,6 +43,7 @@ export function App() {
   const [recent, setRecent] = useState<RecentTicket[]>([]);
   const [sanitized, setSanitized] = useState<SanitizedContext | null>(null);
   const [includePrivateNotes, setIncludePrivateNotes] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,13 +83,15 @@ export function App() {
     if (!ticket) {
       return;
     }
+    const ticketKey = ticket.ticketKey;
     let cancelled = false;
     (async () => {
       const preview = await window.desktopApi.previewSanitizer({
         ticket,
         includePrivateNotes,
       });
-      if (!cancelled) {
+      // Drop stale async results that belong to a previous ticket selection.
+      if (!cancelled && preview.ticketKey === ticketKey) {
         setSanitized(preview);
       }
     })();
@@ -90,8 +100,8 @@ export function App() {
     };
   }, [ticket, includePrivateNotes]);
 
-  // Keep sanitized preview cleared when no ticket is loaded without syncing in an effect.
-  const sanitizedView = ticket ? sanitized : null;
+  // Only expose context that matches the currently selected ticket.
+  const sanitizedForCurrentTicket = selectSanitizedForTicket(ticket?.ticketKey, sanitized);
 
   async function refreshRecent(): Promise<void> {
     setRecent(await window.desktopApi.listRecentTickets());
@@ -101,10 +111,12 @@ export function App() {
     const input = (rawInput ?? ticketInput).trim();
     setTicketLoading(true);
     setTicketError(null);
+    // Clear previous ticket context/chat immediately to prevent cross-ticket leakage.
+    setTicket(null);
+    setSanitized(null);
     try {
       const result = await window.desktopApi.openTicket(input);
       if (!result.ok) {
-        setTicket(null);
         setTicketError(result.error);
         return;
       }
@@ -179,11 +191,7 @@ export function App() {
       ) : null}
 
       {showSettings ? (
-        <SettingsForm
-          settings={settings}
-          secrets={secrets}
-          onSaved={handleSettingsSaved}
-        />
+        <SettingsForm settings={settings} secrets={secrets} onSaved={handleSettingsSaved} />
       ) : (
         <main className="workspace">
           <aside className="sidebar">
@@ -200,7 +208,11 @@ export function App() {
                   placeholder="8812 or https://company.freshdesk.com/a/tickets/8812"
                   aria-label="Ticket ID or URL"
                 />
-                <button type="button" onClick={() => void handleOpenTicket()} disabled={ticketLoading}>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenTicket()}
+                  disabled={ticketLoading}
+                >
                   {ticketLoading ? 'Opening…' : 'Open'}
                 </button>
               </div>
@@ -228,30 +240,54 @@ export function App() {
             ) : null}
 
             {ticketLoading ? (
-              <StatusBanner tone="info" title="Loading ticket" message="Fetching ticket and conversations…" />
+              <StatusBanner
+                tone="info"
+                title="Loading ticket"
+                message="Fetching ticket and conversations…"
+              />
             ) : null}
 
             {ticket ? (
-              <>
+              <TicketWorkspace key={ticket.ticketKey}>
                 <TicketTimeline
                   ticket={ticket}
                   includePrivateNotes={includePrivateNotes}
                   onIncludePrivateNotesChange={async (value) => {
+                    const previous = includePrivateNotes;
                     setIncludePrivateNotes(value);
-                    const saved = await window.desktopApi.saveSettings({
-                      ...settings,
-                      includePrivateNotesInAi: value,
-                    });
-                    setSettings(saved.settings);
+                    setPreferenceError(null);
+                    try {
+                      const saved = await window.desktopApi.saveSettings({
+                        ...settings,
+                        includePrivateNotesInAi: value,
+                      });
+                      setSettings(saved.settings);
+                      setIncludePrivateNotes(saved.settings.includePrivateNotesInAi);
+                    } catch (error) {
+                      setIncludePrivateNotes(previous);
+                      setPreferenceError(
+                        error instanceof Error
+                          ? error.message
+                          : 'Could not save private-note preference.',
+                      );
+                    }
                   }}
                 />
-                <SanitizerPreview context={sanitizedView} />
+                {preferenceError ? (
+                  <StatusBanner
+                    tone="error"
+                    title="Preference not saved"
+                    message={preferenceError}
+                  />
+                ) : null}
+                <SanitizerPreview context={sanitizedForCurrentTicket} />
                 <ChatPanel
+                  key={ticket.ticketKey}
                   ticketKey={ticket.ticketKey}
-                  sanitized={sanitizedView}
+                  sanitized={sanitizedForCurrentTicket}
                   connection={connection}
                 />
-              </>
+              </TicketWorkspace>
             ) : null}
           </section>
         </main>

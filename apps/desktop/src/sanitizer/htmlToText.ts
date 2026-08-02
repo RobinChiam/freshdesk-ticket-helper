@@ -24,11 +24,14 @@ export function htmlToPlainText(input: string): string {
   html = html.replace(/<\/?(ul|ol|table|thead|tbody|blockquote)[^>]*>/gi, '\n');
 
   // Replace anchors with visible text + sanitized URL when the URL looks safe.
-  html = html.replace(/<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_m, _q, href, text) => {
-    const visible = stripTags(text).trim() || 'link';
-    const safeHref = sanitizeUrl(String(href));
-    return safeHref ? `${visible} (${safeHref})` : visible;
-  });
+  html = html.replace(
+    /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_m, _q, href, text) => {
+      const visible = stripTags(text).trim() || 'link';
+      const safeHref = sanitizeUrl(String(href));
+      return safeHref ? `${visible} (${safeHref})` : visible;
+    },
+  );
 
   html = stripTags(html);
   return decodeEntities(html);

@@ -7,7 +7,10 @@ export function ConnectionBadge({ status }: { status: ConnectionStatus | null })
   }
   const label = status.mockMode ? `mock · ${status.state}` : status.state;
   return (
-    <span className={`badge ${status.mockMode ? 'badge-mock' : ''}`} title={status.lastError ?? undefined}>
+    <span
+      className={`badge ${status.mockMode ? 'badge-mock' : ''}`}
+      title={status.lastError ?? undefined}
+    >
       AI: {label}
       {status.queueDepth > 0 ? ` · queue ${status.queueDepth}` : ''}
     </span>

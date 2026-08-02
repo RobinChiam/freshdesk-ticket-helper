@@ -1,16 +1,25 @@
 /**
- * WSS protocol envelope and mock broker behaviour tests.
+ * WSS protocol envelope and AiBrokerClient lifecycle tests.
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  PROTOCOL_VERSION,
-  createWssEnvelope,
-  wssMessageSchema,
-} from '@fth/protocol';
+import { PROTOCOL_VERSION, createWssEnvelope, wssMessageSchema } from '@fth/protocol';
 
 import { MockBrokerAdapter } from '../src/websocket/mockBroker';
 import { AiBrokerClient } from '../src/websocket/client';
+
+function sampleContext(ticketKey = 'company.freshdesk.com:1') {
+  return {
+    ticketKey,
+    contextRevision: 1,
+    subject: 'x',
+    includePrivateNotes: false,
+    redactionMap: {},
+    messages: [],
+    warnings: [],
+    previewText: 'x',
+  };
+}
 
 describe('WSS protocol', () => {
   it('creates versioned envelopes', () => {
@@ -23,7 +32,7 @@ describe('WSS protocol', () => {
     expect(wssMessageSchema.parse(msg).type).toBe('ping');
   });
 
-  it('rejects oversized conceptual auth failures through schema', () => {
+  it('parses authentication failure results', () => {
     const result = wssMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       type: 'auth.result',
@@ -77,7 +86,7 @@ describe('AiBrokerClient', () => {
     expect(status.lastError).toMatch(/Insecure ws:\/\//i);
   });
 
-  it('activates visibly mock mode', async () => {
+  it('activates visibly mock mode on first connection', async () => {
     const onStatus = vi.fn();
     const client = new AiBrokerClient({
       url: '',
@@ -90,6 +99,7 @@ describe('AiBrokerClient', () => {
     const status = await client.connect();
     expect(status.mockMode).toBe(true);
     expect(status.state).toBe('mock');
+    expect(client.isReady()).toBe(true);
   });
 
   it('protects against duplicate clientRequestKey submissions', async () => {
@@ -102,24 +112,15 @@ describe('AiBrokerClient', () => {
     });
     await client.connect();
     const key = '33333333-3333-4333-8333-333333333333';
-    const context = {
-      ticketKey: 'company.freshdesk.com:1',
-      contextRevision: 1,
-      subject: 'x',
-      includePrivateNotes: false,
-      redactionMap: {},
-      messages: [],
-      warnings: [],
-      previewText: 'x',
-    };
+    const context = sampleContext();
     const first = await client.sendChat({
-      ticketKey: 'company.freshdesk.com:1',
+      ticketKey: context.ticketKey,
       context,
       userMessage: 'one',
       clientRequestKey: key,
     });
     const second = await client.sendChat({
-      ticketKey: 'company.freshdesk.com:1',
+      ticketKey: context.ticketKey,
       context,
       userMessage: 'two',
       clientRequestKey: key,
@@ -131,18 +132,119 @@ describe('AiBrokerClient', () => {
     }
   });
 
-  it('reconnects with bounded backoff after unexpected disconnect in mock-less mode', async () => {
-    // Exercise reconnect scheduling without a live socket by checking status transitions
-    // when connect fails against an invalid host under allowInsecureWs false for wss.
+  it('waits for context.ack before completing a mock chat send', async () => {
+    const client = new AiBrokerClient({
+      url: '',
+      deviceToken: '',
+      clientVersion: '0.1.0',
+      useMockBroker: true,
+      allowInsecureWs: false,
+    });
+    await client.connect();
+    const context = sampleContext();
+    const result = await client.sendChat({
+      ticketKey: context.ticketKey,
+      context,
+      userMessage: 'hello',
+      clientRequestKey: '44444444-4444-4444-8444-444444444444',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('reconnects atomically when switching from real URL config into mock mode', async () => {
+    const client = new AiBrokerClient({
+      url: 'wss://example.invalid/ws',
+      deviceToken: 'token',
+      clientVersion: '0.1.0',
+      useMockBroker: false,
+      allowInsecureWs: false,
+      authTimeoutMs: 200,
+    });
+    await client.connect();
+    await client.configure({ useMockBroker: true });
+    expect(client.getStatus().mockMode).toBe(true);
+    expect(client.isReady()).toBe(true);
+  });
+
+  it('does not leave a mock adapter active when switching to a real endpoint config', async () => {
+    const client = new AiBrokerClient({
+      url: '',
+      deviceToken: 'token',
+      clientVersion: '0.1.0',
+      useMockBroker: true,
+      allowInsecureWs: false,
+      authTimeoutMs: 200,
+    });
+    await client.connect();
+    expect(client.getStatus().mockMode).toBe(true);
+
+    await client.configure({
+      useMockBroker: false,
+      url: 'wss://127.0.0.1:1/ws',
+    });
+    expect(client.getStatus().mockMode).toBe(false);
+    client.disconnect();
+  });
+
+  it('times out context acknowledgement when ack never arrives', async () => {
+    const client = new AiBrokerClient({
+      url: '',
+      deviceToken: '',
+      clientVersion: '0.1.0',
+      useMockBroker: true,
+      allowInsecureWs: false,
+      contextAckTimeoutMs: 50,
+    });
+    await client.connect();
+
+    // Replace mock with a stub that never emits context.ack.
+    (client as unknown as { mock: { handle: () => void; dispose: () => void } }).mock = {
+      handle: () => undefined,
+      dispose: () => undefined,
+    };
+
+    const context = sampleContext();
+    const result = await client.sendChat({
+      ticketKey: context.ticketKey,
+      context,
+      userMessage: 'hello',
+      clientRequestKey: '55555555-5555-4555-8555-555555555555',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/context\.ack timed out/i);
+    }
+  });
+
+  it('rejects sendChat when ticketKey does not match sanitized context', async () => {
+    const client = new AiBrokerClient({
+      url: '',
+      deviceToken: '',
+      clientVersion: '0.1.0',
+      useMockBroker: true,
+      allowInsecureWs: false,
+    });
+    await client.connect();
+    const context = sampleContext('company.freshdesk.com:1');
+    const result = await client.sendChat({
+      ticketKey: 'company.freshdesk.com:2',
+      context,
+      userMessage: 'hello',
+      clientRequestKey: '66666666-6666-4666-8666-666666666666',
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('never silently falls back to mock on a failed real connection', async () => {
     const client = new AiBrokerClient({
       url: 'wss://127.0.0.1:1/ws',
       deviceToken: 'token',
       clientVersion: '0.1.0',
       useMockBroker: false,
       allowInsecureWs: false,
+      authTimeoutMs: 300,
     });
     const status = await client.connect();
-    // Either error or connecting/reconnecting depending on timing; never silently mock.
     expect(status.mockMode).toBe(false);
     expect(['error', 'connecting', 'reconnecting', 'authenticating', 'disconnected']).toContain(
       status.state,

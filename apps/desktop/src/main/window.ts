@@ -1,5 +1,6 @@
 /**
  * BrowserWindow factory with hardened Electron security defaults.
+ * createAndLoadMainWindow is shared by startup and macOS activate so load logic stays single.
  */
 import { BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
@@ -45,6 +46,17 @@ export function createMainWindow(): BrowserWindow {
     }
   });
 
+  return window;
+}
+
+/** Create the main window and load either the Vite dev URL or packaged renderer HTML. */
+export async function createAndLoadMainWindow(): Promise<BrowserWindow> {
+  const window = createMainWindow();
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    await window.loadURL(process.env['ELECTRON_RENDERER_URL']);
+  } else {
+    await window.loadFile(join(__dirname, '../renderer/index.html'));
+  }
   return window;
 }
 

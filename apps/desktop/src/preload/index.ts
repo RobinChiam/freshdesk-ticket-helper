@@ -1,14 +1,16 @@
 /**
  * Preload bridge: exposes a narrow, typed API via contextBridge.
  * No generic filesystem, shell, or HTTP access is provided to the renderer.
+ *
+ * Runtime imports must stay sandbox-safe: only Electron plus inlined channel
+ * constants (relative source import — never require() a workspace package).
+ * Schema types are import type-only and erased at compile.
  */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
-import {
-  IpcChannels,
-  type ChatEvent,
-  type ConnectionStatus,
-} from '@fth/protocol';
+// Relative source import so electron-vite inlines constants into the preload CJS bundle.
+import { IpcChannels } from '../../../../packages/protocol/src/channels';
+import type { ChatEvent, ConnectionStatus } from '@fth/protocol';
 
 import type { DesktopApi } from './api-types';
 

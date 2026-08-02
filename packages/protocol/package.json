@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "import": "./dist/preload.js"
     }
   },
   "scripts": {

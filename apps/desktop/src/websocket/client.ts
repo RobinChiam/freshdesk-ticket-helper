@@ -1,6 +1,10 @@
 /**
  * Typed authenticated WSS client for the VPS AI broker.
  * Lives exclusively in the Electron main process.
+ *
+ * Readiness means authenticated (or mock), not merely socket-open.
+ * context.sync must be acknowledged before chat.request is sent.
+ * Never log device tokens or ticket content.
  */
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
@@ -28,6 +32,9 @@ export type WssClientOptions = {
   allowInsecureWs: boolean;
   onStatus?: (status: ConnectionStatus) => void;
   onChatEvent?: (event: ChatEvent) => void;
+  /** Test-only overrides for timeouts (milliseconds). */
+  authTimeoutMs?: number;
+  contextAckTimeoutMs?: number;
 };
 
 type PendingChat = {
@@ -36,9 +43,20 @@ type PendingChat = {
   ticketKey: string;
 };
 
+type PendingContextAck = {
+  requestId: string;
+  ticketKey: string;
+  contextRevision: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 500;
 const HEARTBEAT_MS = 20_000;
+const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
+const DEFAULT_CONTEXT_ACK_TIMEOUT_MS = 10_000;
 
 /**
  * Manages connection lifecycle, auth, heartbeat, reconnect, and chat requests.
@@ -61,7 +79,14 @@ export class AiBrokerClient {
   private intentionalClose = false;
   private readonly seenRequestKeys = new Set<string>();
   private readonly pending = new Map<string, PendingChat>();
+  private readonly pendingContextAcks = new Map<string, PendingContextAck>();
   private authenticated = false;
+  private authWaiters: Array<{
+    resolve: (status: ConnectionStatus) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }> = [];
+  private connectGeneration = 0;
 
   constructor(options: WssClientOptions) {
     this.options = options;
@@ -71,25 +96,57 @@ export class AiBrokerClient {
     return { ...this.status };
   }
 
-  /** Update connection settings; reconnects if already active. */
-  configure(options: Partial<WssClientOptions>): void {
-    this.options = { ...this.options, ...options };
+  isReady(): boolean {
+    return (
+      this.authenticated && (this.status.state === 'connected' || this.status.state === 'mock')
+    );
   }
 
+  /**
+   * Update options. When connection-affecting settings change, disconnect the previous
+   * socket/mock and reconnect so stale endpoints/tokens cannot remain active.
+   */
+  async configure(options: Partial<WssClientOptions>): Promise<void> {
+    const previous = this.options;
+    this.options = { ...previous, ...options };
+
+    const connectionAffecting =
+      (options.url !== undefined && options.url !== previous.url) ||
+      (options.deviceToken !== undefined && options.deviceToken !== previous.deviceToken) ||
+      (options.useMockBroker !== undefined && options.useMockBroker !== previous.useMockBroker) ||
+      (options.allowInsecureWs !== undefined &&
+        options.allowInsecureWs !== previous.allowInsecureWs);
+
+    if (!connectionAffecting) {
+      return;
+    }
+
+    this.rejectPendingOperations('Connection settings changed.');
+    this.disconnect({ silent: true });
+    await this.connect();
+  }
+
+  /** Connect and resolve only after authentication succeeds, fails, or times out. */
   async connect(): Promise<ConnectionStatus> {
     this.intentionalClose = false;
+    const generation = ++this.connectGeneration;
 
     if (this.options.useMockBroker) {
       return this.connectMock();
     }
 
+    // Switching to real WSS must not leave a mock adapter active.
+    this.mock?.dispose();
+    this.mock = null;
+
     const url = this.options.url.trim();
     if (!url) {
+      this.authenticated = false;
       this.setStatus({
         state: 'error',
         mockMode: false,
         lastError: 'WSS URL is not configured.',
-        queueDepth: 0,
+        queueDepth: this.pending.size,
       });
       return this.getStatus();
     }
@@ -98,37 +155,48 @@ export class AiBrokerClient {
     try {
       parsed = new URL(url);
     } catch {
+      this.authenticated = false;
       this.setStatus({
         state: 'error',
         mockMode: false,
         lastError: 'WSS URL is malformed.',
-        queueDepth: 0,
+        queueDepth: this.pending.size,
       });
       return this.getStatus();
     }
 
     // Production builds must never silently fall back from WSS to insecure WS.
     if (parsed.protocol === 'ws:' && !this.options.allowInsecureWs) {
+      this.authenticated = false;
       this.setStatus({
         state: 'error',
         mockMode: false,
         lastError:
           'Insecure ws:// URLs are blocked in this build. Use wss:// or enable mock broker mode.',
-        queueDepth: 0,
+        queueDepth: this.pending.size,
       });
       return this.getStatus();
     }
 
     if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+      this.authenticated = false;
       this.setStatus({
         state: 'error',
         mockMode: false,
         lastError: 'AI broker URL must use the wss: scheme.',
-        queueDepth: 0,
+        queueDepth: this.pending.size,
       });
       return this.getStatus();
     }
 
+    // Replace any prior live socket before opening a new one.
+    if (this.socket) {
+      this.intentionalClose = true;
+      this.closeSocket();
+      this.intentionalClose = false;
+    }
+
+    this.authenticated = false;
     this.setStatus({
       state: this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting',
       mockMode: false,
@@ -136,11 +204,24 @@ export class AiBrokerClient {
       queueDepth: this.pending.size,
     });
 
+    const authTimeoutMs = this.options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
+
     await new Promise<void>((resolve) => {
       const socket = new WebSocket(url);
       this.socket = socket;
+      let settled = false;
+
+      const settleOpen = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
 
       socket.on('open', () => {
+        if (generation !== this.connectGeneration) {
+          settleOpen();
+          return;
+        }
         this.setStatus({
           state: 'authenticating',
           mockMode: false,
@@ -149,16 +230,19 @@ export class AiBrokerClient {
         });
         this.sendAuth();
         this.startHeartbeat();
-        resolve();
+        settleOpen();
       });
 
       socket.on('message', (data) => {
+        if (generation !== this.connectGeneration) return;
         this.handleIncoming(data);
       });
 
       socket.on('close', () => {
+        if (generation !== this.connectGeneration) return;
         this.stopHeartbeat();
         this.authenticated = false;
+        this.failAuthWaiters(new Error('WebSocket closed before authentication completed.'));
         if (!this.intentionalClose) {
           this.scheduleReconnect();
         } else {
@@ -169,45 +253,80 @@ export class AiBrokerClient {
             queueDepth: this.pending.size,
           });
         }
+        settleOpen();
       });
 
       socket.on('error', () => {
         // Details intentionally generic — avoid leaking URL query tokens in UI/logs.
+        if (generation !== this.connectGeneration) {
+          settleOpen();
+          return;
+        }
         this.setStatus({
           state: 'error',
           mockMode: false,
           lastError: 'WebSocket connection error.',
           queueDepth: this.pending.size,
         });
-        resolve();
+        this.failAuthWaiters(new Error('WebSocket connection error.'));
+        settleOpen();
       });
     });
+
+    if (generation !== this.connectGeneration) {
+      return this.getStatus();
+    }
+
+    if (this.authenticated) {
+      return this.getStatus();
+    }
+
+    if (this.status.state === 'error' || this.status.state === 'disconnected') {
+      return this.getStatus();
+    }
+
+    // Socket may be open while auth is still in flight — wait for auth.result.
+    try {
+      await this.waitForAuthentication(authTimeoutMs);
+    } catch {
+      if (!this.authenticated) {
+        this.setStatus({
+          state: 'error',
+          mockMode: false,
+          lastError: this.status.lastError ?? 'WSS authentication timed out.',
+          queueDepth: this.pending.size,
+        });
+        this.intentionalClose = true;
+        this.closeSocket();
+      }
+    }
 
     return this.getStatus();
   }
 
-  disconnect(): void {
+  disconnect(options?: { silent?: boolean }): void {
     this.intentionalClose = true;
+    this.connectGeneration += 1;
     this.clearReconnect();
     this.stopHeartbeat();
     this.mock?.dispose();
     this.mock = null;
-    if (this.socket) {
-      this.socket.close();
-      this.socket = null;
-    }
+    this.closeSocket();
     this.authenticated = false;
-    this.setStatus({
-      state: 'disconnected',
-      mockMode: false,
-      lastError: null,
-      queueDepth: this.pending.size,
-    });
+    this.failAuthWaiters(new Error('Disconnected.'));
+    if (!options?.silent) {
+      this.setStatus({
+        state: 'disconnected',
+        mockMode: false,
+        lastError: null,
+        queueDepth: this.pending.size,
+      });
+    }
   }
 
   async testConnection(): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
     if (this.options.useMockBroker) {
-      await this.connectMock();
+      await this.connect();
       return { ok: true, message: 'Mock AI broker is active (no remote WSS).' };
     }
 
@@ -215,23 +334,19 @@ export class AiBrokerClient {
       return { ok: false, error: 'WSS device/pairing token is not configured.' };
     }
 
-    await this.connect();
-    if (this.status.state === 'authenticating' || this.status.state === 'connecting') {
-      // Wait briefly for auth.result during the test.
-      await sleep(1500);
-    }
-    if (this.status.state === 'connected' || this.status.state === 'mock') {
+    const status = await this.connect();
+    if (status.state === 'connected' || status.state === 'mock') {
       return { ok: true, message: 'AI broker connection and authentication succeeded.' };
     }
     return {
       ok: false,
-      error: this.status.lastError ?? 'AI broker connection failed.',
+      error: status.lastError ?? 'AI broker connection failed.',
     };
   }
 
   /**
-   * Sync sanitized context then send a chat request.
-   * Rejects duplicate clientRequestKey values to protect against double-submit.
+   * Ensure authenticated readiness, sync sanitized context, wait for matching context.ack,
+   * then send chat.request. Rejects duplicate clientRequestKey values.
    */
   async sendChat(args: {
     ticketKey: string;
@@ -246,10 +361,14 @@ export class AiBrokerClient {
       };
     }
 
-    if (!this.options.useMockBroker && !this.authenticated) {
+    if (args.ticketKey !== args.context.ticketKey) {
+      return { ok: false, error: 'ticketKey does not match sanitized context.' };
+    }
+
+    if (!this.isReady()) {
       await this.connect();
-      if (!this.authenticated && this.status.state !== 'mock') {
-        return { ok: false, error: this.status.lastError ?? 'Not connected to AI broker.' };
+      if (!this.isReady()) {
+        return { ok: false, error: this.status.lastError ?? 'Not authenticated to AI broker.' };
       }
     }
 
@@ -262,8 +381,9 @@ export class AiBrokerClient {
     });
     this.setStatus({ ...this.status, queueDepth: this.pending.size });
 
+    const contextRequestId = randomUUID();
     const contextMsg = createWssEnvelope('context.sync', {
-      requestId: randomUUID(),
+      requestId: contextRequestId,
       ticketKey: args.ticketKey,
       payload: {
         contextRevision: args.context.contextRevision,
@@ -271,29 +391,48 @@ export class AiBrokerClient {
       },
     });
 
-    const chatMsg = createWssEnvelope('chat.request', {
-      requestId,
-      ticketKey: args.ticketKey,
-      payload: {
+    try {
+      // Register the ack waiter before sending — mock (and fast servers) may ack synchronously.
+      const ackPromise = this.waitForContextAck({
+        requestId: contextRequestId,
+        ticketKey: args.ticketKey,
         contextRevision: args.context.contextRevision,
-        userMessage: args.userMessage,
-        clientRequestKey: args.clientRequestKey,
-      },
-    });
+      });
 
-    if (this.mock) {
-      this.mock.handle(contextMsg);
-      this.mock.handle(chatMsg);
+      if (this.mock) {
+        this.mock.handle(contextMsg);
+      } else if (!this.send(contextMsg)) {
+        throw new Error('Failed to send context.sync over WSS.');
+      }
+
+      await ackPromise;
+
+      const chatMsg = createWssEnvelope('chat.request', {
+        requestId,
+        ticketKey: args.ticketKey,
+        payload: {
+          contextRevision: args.context.contextRevision,
+          userMessage: args.userMessage,
+          clientRequestKey: args.clientRequestKey,
+        },
+      });
+
+      if (this.mock) {
+        this.mock.handle(chatMsg);
+      } else if (!this.send(chatMsg)) {
+        throw new Error('Failed to send chat.request over WSS.');
+      }
+
       return { ok: true, requestId };
-    }
-
-    if (!this.send(contextMsg) || !this.send(chatMsg)) {
+    } catch (error) {
+      this.pendingContextAcks.delete(contextRequestId);
       this.pending.delete(requestId);
       this.setStatus({ ...this.status, queueDepth: this.pending.size });
-      return { ok: false, error: 'Failed to send chat request over WSS.' };
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to send chat request.',
+      };
     }
-
-    return { ok: true, requestId };
   }
 
   cancel(requestId: string): void {
@@ -316,6 +455,12 @@ export class AiBrokerClient {
   }
 
   private connectMock(): ConnectionStatus {
+    // Switching to mock must tear down any real socket.
+    if (this.socket) {
+      this.intentionalClose = true;
+      this.closeSocket();
+      this.intentionalClose = false;
+    }
     this.mock?.dispose();
     this.mock = new MockBrokerAdapter({
       onMessage: (message) => this.dispatchMessage(message),
@@ -329,7 +474,16 @@ export class AiBrokerClient {
       lastConnectedAt: new Date().toISOString(),
       queueDepth: this.pending.size,
     });
+    this.resolveAuthWaiters();
     return this.getStatus();
+  }
+
+  private closeSocket(): void {
+    const socket = this.socket as WebSocket | null;
+    if (socket) {
+      socket.close();
+    }
+    this.socket = null;
   }
 
   private sendAuth(): void {
@@ -409,17 +563,24 @@ export class AiBrokerClient {
             lastConnectedAt: new Date().toISOString(),
             queueDepth: this.pending.size,
           });
+          this.resolveAuthWaiters();
         } else {
           this.authenticated = false;
+          // Do not echo token material — broker errors are treated as generic auth failure text.
           this.setStatus({
             state: 'error',
             mockMode: false,
             lastError: message.payload.error ?? 'WSS authentication failed.',
             queueDepth: this.pending.size,
           });
+          this.failAuthWaiters(new Error(message.payload.error ?? 'WSS authentication failed.'));
           this.intentionalClose = true;
-          this.socket?.close();
+          this.closeSocket();
         }
+        break;
+      }
+      case 'context.ack': {
+        this.resolveContextAck(message);
         break;
       }
       case 'pong':
@@ -430,9 +591,7 @@ export class AiBrokerClient {
           ticketKey: message.ticketKey,
           payload: { nonce: message.payload.nonce },
         });
-        if (this.mock) {
-          // Mock answers its own pings.
-        } else {
+        if (!this.mock) {
           this.send(pong);
         }
         break;
@@ -480,6 +639,91 @@ export class AiBrokerClient {
       default:
         break;
     }
+  }
+
+  private waitForAuthentication(timeoutMs: number): Promise<ConnectionStatus> {
+    if (this.isReady()) {
+      return Promise.resolve(this.getStatus());
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.authWaiters = this.authWaiters.filter((waiter) => waiter.timer !== timer);
+        reject(new Error('WSS authentication timed out.'));
+      }, timeoutMs);
+      this.authWaiters.push({ resolve, reject, timer });
+    });
+  }
+
+  private resolveAuthWaiters(): void {
+    const waiters = this.authWaiters;
+    this.authWaiters = [];
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(this.getStatus());
+    }
+  }
+
+  private failAuthWaiters(error: Error): void {
+    const waiters = this.authWaiters;
+    this.authWaiters = [];
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  }
+
+  private waitForContextAck(args: {
+    requestId: string;
+    ticketKey: string;
+    contextRevision: number;
+  }): Promise<void> {
+    const timeoutMs = this.options.contextAckTimeoutMs ?? DEFAULT_CONTEXT_ACK_TIMEOUT_MS;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingContextAcks.delete(args.requestId);
+        reject(new Error('context.ack timed out.'));
+      }, timeoutMs);
+      this.pendingContextAcks.set(args.requestId, {
+        ...args,
+        resolve,
+        reject,
+        timer,
+      });
+    });
+  }
+
+  private resolveContextAck(message: Extract<WssMessage, { type: 'context.ack' }>): void {
+    const pending = this.pendingContextAcks.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+    if (
+      pending.ticketKey !== message.ticketKey ||
+      pending.contextRevision !== message.payload.contextRevision
+    ) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingContextAcks.delete(message.requestId);
+    pending.resolve();
+  }
+
+  private rejectPendingOperations(reason: string): void {
+    for (const [requestId, pending] of this.pendingContextAcks) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+      this.pendingContextAcks.delete(requestId);
+    }
+    for (const requestId of this.pending.keys()) {
+      this.pending.delete(requestId);
+      this.options.onChatEvent?.({
+        type: 'failed',
+        requestId,
+        error: reason,
+        code: 'connection_replaced',
+      });
+    }
+    this.setStatus({ ...this.status, queueDepth: 0 });
   }
 
   private startHeartbeat(): void {
@@ -534,8 +778,4 @@ export class AiBrokerClient {
     };
     this.options.onStatus?.(this.getStatus());
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

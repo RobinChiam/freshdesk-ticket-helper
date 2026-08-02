@@ -33,9 +33,8 @@ export function openAppDatabase(filePath: string): AppDatabase {
   return {
     db,
     getSetting(key) {
-      const row = db
-        .prepare('SELECT value FROM settings WHERE key = ?')
-        .get(key) as { value: string } | undefined;
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+        { value: string } | undefined;
       return row?.value ?? null;
     },
     setSetting(key, value) {
@@ -107,9 +106,9 @@ function migrate(db: DatabaseSync): void {
   `);
 
   const applied = new Set(
-    (
-      db.prepare('SELECT id FROM schema_migrations').all() as Array<{ id: number }>
-    ).map((row) => row.id),
+    (db.prepare('SELECT id FROM schema_migrations').all() as Array<{ id: number }>).map(
+      (row) => row.id,
+    ),
   );
 
   for (const migration of MIGRATIONS) {

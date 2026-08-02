@@ -6,7 +6,7 @@ Secure Electron desktop app for Freshdesk agents: open a ticket, review its full
 
 - First-run configuration for Freshdesk URL/API key and public WSS URL/device token
 - OS credential vault storage for secrets (refuses insecure Linux `basic_text` fallback)
-- Ticket ID / URL parsing with host allowlisting
+- Ticket ID / URL parsing with host allowlisting (https only)
 - Freshdesk API v2 ticket + paginated conversation fetch (read-only)
 - Local sanitizer with redaction preview
 - Typed WSS client with mock broker mode
@@ -23,7 +23,7 @@ Renderer (React)  --typed preload-->  Main process
                                       └─ safeStorage vault (secrets)
 ```
 
-Shared Zod schemas live in `packages/protocol`.
+Shared Zod schemas live in `packages/protocol`. Sandboxed preload imports `@fth/protocol/preload` (channel constants only).
 
 ## Prerequisites
 
@@ -49,10 +49,13 @@ Packaging (directory output):
 npm run pack
 ```
 
+Configuration is entered in the app Settings UI (not via `.env`). Secrets go to the OS vault; non-secret settings go to local SQLite under the Electron userData path.
+
 ## Security highlights
 
 - `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`
-- Restrictive CSP; no remote module; no generic shell/FS preload APIs
+- Restrictive production CSP; development CSP adds only the Vite Fast Refresh / HMR allowances
+- No remote module; no generic shell/FS preload APIs
 - Secrets never stored in SQLite, localStorage, or source-controlled env files
 - Production builds refuse silent `ws://` fallback
 - The app never SSHs into the VPS
@@ -67,13 +70,10 @@ Never paste an SSH private key into the application.
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/SECURITY.md](docs/SECURITY.md)
-- [docs/PROTOCOL.md](docs/PROTOCOL.md)
-- [docs/HANDOFF.md](docs/HANDOFF.md)
-- [docs/TRANSCRIPT.md](docs/TRANSCRIPT.md)
-- [AGENT.md](AGENT.md) (canonical agent instructions)
-- [AGENTS.md](AGENTS.md) (compatibility pointer)
+- [AGENT.md](AGENT.md) — canonical agent instructions
+- [AGENTS.md](AGENTS.md) — compatibility pointer
+
+Architecture, security, protocol, and handoff notes may exist under a local-only `docs/` directory on a developer machine; that directory is gitignored and is not part of a clean clone.
 
 ## Offline demo
 

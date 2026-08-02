@@ -1,6 +1,7 @@
 /**
  * First-run / settings form for Freshdesk + WSS configuration.
  * Never displays stored secret values — only presence indicators.
+ * Failed saves must not proceed to connection tests with stale settings.
  */
 import { useState } from 'react';
 
@@ -13,6 +14,13 @@ type Props = {
   secrets: SecretsStatus;
   onSaved: (next: { settings: NonSecretSettings; secrets: SecretsStatus }) => void | Promise<void>;
 };
+
+function sanitizeSettingsError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Failed to save settings.';
+  return message
+    .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, 'Basic [REDACTED]')
+    .replace(/(api[_-]?key|token|secret)\s*[:=]\s*\S+/gi, '$1=[REDACTED]');
+}
 
 export function SettingsForm({ settings, secrets, onSaved }: Props) {
   const [freshdeskUrl, setFreshdeskUrl] = useState(settings.freshdeskUrl);
@@ -30,7 +38,7 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
   const [fdTest, setFdTest] = useState<string | null>(null);
   const [wssTest, setWssTest] = useState<string | null>(null);
 
-  async function save(markComplete: boolean): Promise<void> {
+  async function save(markComplete: boolean): Promise<boolean> {
     setBusy(true);
     setError(null);
     setMessage(null);
@@ -57,8 +65,10 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
       setWssDeviceToken('');
       setMessage('Settings saved. Secrets are stored in the OS credential vault when available.');
       await onSaved(saved);
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings.');
+      setError(sanitizeSettingsError(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -66,16 +76,44 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
 
   async function testFreshdesk(): Promise<void> {
     setFdTest(null);
-    await save(false);
+    const saved = await save(false);
+    if (!saved) {
+      setFdTest('Save failed — Freshdesk test was not run.');
+      return;
+    }
     const result = await window.desktopApi.testFreshdesk();
     setFdTest(result.ok ? result.message : result.error);
   }
 
   async function testWss(): Promise<void> {
     setWssTest(null);
-    await save(false);
+    const saved = await save(false);
+    if (!saved) {
+      setWssTest('Save failed — AI server test was not run.');
+      return;
+    }
     const result = await window.desktopApi.testWss();
     setWssTest(result.ok ? result.message : result.error);
+  }
+
+  async function clearSecrets(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const saved = await window.desktopApi.saveSettings({
+        ...settings,
+        clearFreshdeskApiKey: true,
+        clearWssDeviceToken: true,
+      });
+      setMessage('Stored secrets cleared from the OS vault.');
+      await onSaved(saved);
+    } catch (err) {
+      setError(sanitizeSettingsError(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -88,7 +126,7 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
 
       <div className="form-grid">
         <label>
-          Freshdesk account URL
+          Freshdesk account URL (https only)
           <input
             value={freshdeskUrl}
             onChange={(e) => setFreshdeskUrl(e.target.value)}
@@ -111,7 +149,9 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
             type="password"
             value={freshdeskApiKey}
             onChange={(e) => setFreshdeskApiKey(e.target.value)}
-            placeholder={secrets.freshdeskApiKeyPresent ? '•••••••• (leave blank to keep)' : 'Enter API key'}
+            placeholder={
+              secrets.freshdeskApiKeyPresent ? '•••••••• (leave blank to keep)' : 'Enter API key'
+            }
             autoComplete="off"
           />
         </label>
@@ -132,12 +172,17 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
           />
         </label>
         <label>
-          Device / pairing token {secrets.wssDeviceTokenPresent ? '(saved in vault)' : '(not saved)'}
+          Device / pairing token{' '}
+          {secrets.wssDeviceTokenPresent ? '(saved in vault)' : '(not saved)'}
           <input
             type="password"
             value={wssDeviceToken}
             onChange={(e) => setWssDeviceToken(e.target.value)}
-            placeholder={secrets.wssDeviceTokenPresent ? '•••••••• (leave blank to keep)' : 'Enter pairing token'}
+            placeholder={
+              secrets.wssDeviceTokenPresent
+                ? '•••••••• (leave blank to keep)'
+                : 'Enter pairing token'
+            }
             autoComplete="off"
           />
         </label>
@@ -169,7 +214,7 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
         <StatusBanner
           tone="warning"
           title="Private notes will be sent to the AI broker when enabled"
-          message="Internal notes must not be disclosed in customer-facing drafts."
+          message="Internal notes must not be disclosed in customer-facing drafts. Notes are only available when the Freshdesk API key’s agent permissions allow them."
         />
       ) : null}
 
@@ -180,17 +225,7 @@ export function SettingsForm({ settings, secrets, onSaved }: Props) {
         <button type="button" onClick={() => void save(true)} disabled={busy}>
           {busy ? 'Saving…' : 'Save and continue'}
         </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() =>
-            void window.desktopApi.saveSettings({
-              ...settings,
-              clearFreshdeskApiKey: true,
-              clearWssDeviceToken: true,
-            }).then(onSaved)
-          }
-        >
+        <button type="button" className="ghost" onClick={() => void clearSecrets()} disabled={busy}>
           Clear stored secrets
         </button>
       </div>

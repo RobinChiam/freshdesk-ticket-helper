@@ -12,7 +12,7 @@ import {
 } from '@fth/protocol';
 
 describe('IPC schemas', () => {
-  it('accepts valid non-secret settings', () => {
+  it('accepts valid non-secret settings with https Freshdesk URL', () => {
     const parsed = nonSecretSettingsSchema.parse({
       freshdeskUrl: 'https://company.freshdesk.com',
       freshdeskUiHosts: [],
@@ -22,6 +22,19 @@ describe('IPC schemas', () => {
       onboardingComplete: false,
     });
     expect(parsed.useMockBroker).toBe(true);
+  });
+
+  it('rejects http Freshdesk URLs in settings schema', () => {
+    expect(() =>
+      nonSecretSettingsSchema.parse({
+        freshdeskUrl: 'http://company.freshdesk.com',
+        freshdeskUiHosts: [],
+        wssUrl: '',
+        useMockBroker: true,
+        includePrivateNotesInAi: false,
+        onboardingComplete: false,
+      }),
+    ).toThrow();
   });
 
   it('keeps secrets optional on save input', () => {

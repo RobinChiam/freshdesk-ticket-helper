@@ -12,13 +12,14 @@ export type FreshdeskClientOptions = {
   apiKey: string;
   /** Injected for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /**
+   * Test-only: allow http:// for a local mock server.
+   * Production callers must never set this — HTTPS is required before Authorization is sent.
+   */
+  allowInsecureHttpForTests?: boolean;
 };
 
-export type FreshdeskErrorCode =
-  | 'permission_denied'
-  | 'not_found'
-  | 'network_error'
-  | 'unknown';
+export type FreshdeskErrorCode = 'permission_denied' | 'not_found' | 'network_error' | 'unknown';
 
 export class FreshdeskApiError extends Error {
   readonly code: FreshdeskErrorCode;
@@ -69,6 +70,20 @@ export class FreshdeskClient {
 
   constructor(options: FreshdeskClientOptions) {
     const url = new URL(options.accountUrl);
+    // Reject HTTP before any Authorization header is constructed or sent.
+    if (url.protocol !== 'https:' && !options.allowInsecureHttpForTests) {
+      throw new FreshdeskApiError(
+        'unknown',
+        'Freshdesk account URL must use https:// before API credentials are sent.',
+      );
+    }
+    if (
+      options.allowInsecureHttpForTests &&
+      url.protocol !== 'http:' &&
+      url.protocol !== 'https:'
+    ) {
+      throw new FreshdeskApiError('unknown', 'Unsupported Freshdesk URL scheme.');
+    }
     this.baseUrl = `${url.protocol}//${url.host}`;
     this.hostname = url.hostname.toLowerCase();
     this.apiKey = options.apiKey;

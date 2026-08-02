@@ -13,8 +13,10 @@ npm-debug.log*
 .eslintcache
 .vite/
 coverage/
+playwright-report/
+test-results/
 
-# Environment and secrets — never commit
+# Environment and secrets — never commit real credentials
 .env
 .env.*
 !.env.example
@@ -22,7 +24,10 @@ coverage/
 *.key
 id_rsa*
 credentials.json
-secrets/
+# Repository-local secrets directory only (not apps/**/secrets/ source folders)
+/secrets/
+# Runtime encrypted vault files (normally under userData, never under source)
+*.vault
 
 # OS / editor
 .DS_Store
@@ -41,9 +46,5 @@ apps/desktop/release/
 *.sqlite3
 *.db
 
-# Prettier
-.prettierrc
-.prettierignore
-
-# Local Agentic Environment
+# Local-only agent working docs (not shipped in a clean clone)
 docs/

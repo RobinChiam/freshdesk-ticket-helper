@@ -1,6 +1,7 @@
 /**
  * AI chat panel with streaming deltas, queue status, and cancellation.
  * Uses UUID clientRequestKey to block duplicate submissions.
+ * Remount via key={ticketKey} from App so history cannot leak across tickets.
  */
 import { useEffect, useState } from 'react';
 
@@ -27,6 +28,9 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const [queueNote, setQueueNote] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+
+  // Context is sendable only when it is present and bound to this panel's ticketKey.
+  const contextReady = sanitized != null && sanitized.ticketKey === ticketKey;
 
   useEffect(() => {
     return window.desktopApi.onChatEvent((event: ChatEvent) => {
@@ -55,7 +59,12 @@ export function ChatPanel({
   }, [requestId]);
 
   async function send(): Promise<void> {
-    if (!sanitized || !input.trim() || requestId) {
+    if (!contextReady || !sanitized || !input.trim() || requestId) {
+      return;
+    }
+    // Renderer must never send context whose ticketKey does not match the current ticket.
+    if (sanitized.ticketKey !== ticketKey) {
+      setError('Sanitized context does not match the current ticket.');
       return;
     }
     setError(null);
@@ -98,11 +107,11 @@ export function ChatPanel({
         </p>
       </div>
 
-      {!sanitized ? (
+      {!contextReady ? (
         <StatusBanner
           tone="info"
           title="Waiting for context"
-          message="Sanitized context is required before chatting."
+          message="Sanitized context for this ticket is required before chatting."
         />
       ) : null}
 
@@ -137,9 +146,13 @@ export function ChatPanel({
               void send();
             }
           }}
-          disabled={!sanitized || Boolean(requestId)}
+          disabled={!contextReady || Boolean(requestId)}
         />
-        <button type="button" onClick={() => void send()} disabled={!sanitized || Boolean(requestId)}>
+        <button
+          type="button"
+          onClick={() => void send()}
+          disabled={!contextReady || Boolean(requestId)}
+        >
           Send
         </button>
         <button type="button" className="ghost" onClick={() => void cancel()} disabled={!requestId}>

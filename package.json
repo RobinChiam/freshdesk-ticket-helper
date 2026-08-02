@@ -16,6 +16,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run test -w @fth/desktop",
+    "test:smoke": "npm run build && npm run test:smoke -w @fth/desktop",
+    "test:all": "npm run build && npm run test:all -w @fth/desktop",
     "pack": "npm run build && npm run pack -w @fth/desktop"
   },
   "engines": {

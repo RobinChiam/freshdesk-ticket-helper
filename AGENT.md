@@ -56,34 +56,41 @@ Workspace packages: `@fth/protocol`, `@fth/desktop`.
 - Writing replies/notes back to Freshdesk in this prototype
 - Placing raw ticket text inside a system prompt
 
-## IPC and WSS security rules
-
-- Validate all IPC payloads with `@fth/protocol` schemas
-- Main-process-only network access
-- WSS messages require `protocolVersion`, `requestId`, `ticketKey`, `timestamp`, `payload`
-- Enforce max message sizes, request IDs, cancellation, and duplicate `clientRequestKey` protection
-- Mock broker must be visually obvious
-
 ## Freshdesk / private-note handling
 
 - Distinguish private notes via conversation `private`
 - Show a clear Private note badge locally
+- Private notes appear only when the Freshdesk API key’s agent permissions allow the API to return them
 - “Include private notes in AI context” defaults to off; warn when enabled
 - Label included notes as `INTERNAL_NOTE`
 - API key permissions remain authoritative
 
+## IPC and WSS security rules
+
+- Validate all IPC payloads with `@fth/protocol` schemas
+- Validate IPC sender/frame against the expected BrowserWindow main frame
+- Main-process-only network access
+- Sandboxed preload imports only `@fth/protocol/preload` (no Zod runtime)
+- WSS readiness means authenticated (or mock), not merely socket-open
+- Wait for matching `context.ack` before `chat.request`
+- Enforce max message sizes, request IDs, cancellation, and duplicate `clientRequestKey` protection
+- Mock broker must be visually obvious
+- Chat payloads must keep outer `ticketKey`/`contextRevision` equal to `sanitizedContext`
+
 ## Handoff and transcript updates
 
-When finishing meaningful work:
+`docs/` is intentionally **local-only** and gitignored. When present on a developer machine:
 
 1. Update `docs/HANDOFF.md` with status, limitations, verification commands, and next tasks
 2. Append a dated summary to `docs/TRANSCRIPT.md` (no credentials, customer data, or raw private notes)
 3. Keep `AGENTS.md` as a short pointer to this file
 
+Do not add `docs/` to Git. A clean clone will not include those files; use this AGENT.md and the README as the source of truth for shared instructions.
+
 ## Definition of done
 
-- Typecheck, lint, unit tests, and Electron build succeed
+- Typecheck, lint, unit tests, Electron smoke test, and Electron build succeed
 - URL parser, sanitizer, IPC schema, and WSS protocol tests covered
 - No secrets or real ticket data in tracked files
 - Renderer has no Node integration
-- Handoff + transcript updated
+- Local handoff/transcript updated when `docs/` exists on the machine (still ignored by Git)

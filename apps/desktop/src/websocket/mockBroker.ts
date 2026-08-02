@@ -93,30 +93,33 @@ export class MockBrokerAdapter {
     let accumulated = '';
 
     chunks.forEach((chunk, index) => {
-      const timer = setTimeout(() => {
-        if (this.cancelled.has(requestId)) {
-          return;
-        }
-        accumulated += chunk;
-        this.emit(
-          createWssEnvelope('chat.delta', {
-            requestId,
-            ticketKey,
-            payload: { sequence, text: chunk },
-          }),
-        );
-        sequence += 1;
-
-        if (index === chunks.length - 1) {
+      const timer = setTimeout(
+        () => {
+          if (this.cancelled.has(requestId)) {
+            return;
+          }
+          accumulated += chunk;
           this.emit(
-            createWssEnvelope('chat.completed', {
+            createWssEnvelope('chat.delta', {
               requestId,
               ticketKey,
-              payload: { text: accumulated, sequenceEnd: sequence - 1 },
+              payload: { sequence, text: chunk },
             }),
           );
-        }
-      }, 200 + index * 250);
+          sequence += 1;
+
+          if (index === chunks.length - 1) {
+            this.emit(
+              createWssEnvelope('chat.completed', {
+                requestId,
+                ticketKey,
+                payload: { text: accumulated, sequenceEnd: sequence - 1 },
+              }),
+            );
+          }
+        },
+        200 + index * 250,
+      );
       this.timers.add(timer);
     });
   }

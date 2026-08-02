@@ -18,7 +18,7 @@
   --mock-bg: #ffe4c2;
   --shadow: 0 18px 40px rgba(28, 42, 36, 0.08);
   --radius: 18px;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
 }
 
 * {
@@ -309,7 +309,7 @@ button.ghost {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
   font-size: 0.86rem;
   line-height: 1.45;
 }

@@ -70,6 +70,28 @@ describe('FreshdeskClient', () => {
     } satisfies Partial<FreshdeskApiError>);
   });
 
+  it('rejects http Freshdesk account URLs before Authorization is used', async () => {
+    expect(
+      () =>
+        new FreshdeskClient({
+          accountUrl: 'http://company.freshdesk.com',
+          apiKey: 'test-key',
+        }),
+    ).toThrow(/https/i);
+  });
+
+  it('allows explicit test-only http injection for local mock servers', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({ id: 1 }), { status: 200 });
+    const client = new FreshdeskClient({
+      accountUrl: 'http://127.0.0.1:9',
+      apiKey: 'test-key',
+      fetchImpl,
+      allowInsecureHttpForTests: true,
+    });
+    await expect(client.testConnection()).resolves.toMatchObject({ ok: true });
+  });
+
   it('maps network failures without echoing credentials', async () => {
     const fetchImpl: typeof fetch = async () => {
       throw new Error('connect ECONNREFUSED');

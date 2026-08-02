@@ -1,6 +1,7 @@
 /**
  * Ticket header + conversation timeline.
  * Renders plain text only — never inserts Freshdesk HTML via innerHTML.
+ * Private notes are shown only when Freshdesk returned them for this API key’s permissions.
  */
 import type { TicketDetail } from '@fth/protocol';
 
@@ -55,7 +56,10 @@ export function TicketTimeline({
         </article>
 
         {ticket.conversations.map((message) => (
-          <article key={message.id} className={`message ${message.private ? 'message-private' : ''}`}>
+          <article
+            key={message.id}
+            className={`message ${message.private ? 'message-private' : ''}`}
+          >
             <header>
               <span className="role">{message.role}</span>
               {message.private ? <span className="private-badge">Private note</span> : null}

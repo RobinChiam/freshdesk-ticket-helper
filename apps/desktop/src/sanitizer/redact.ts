@@ -8,16 +8,14 @@ export type RedactionState = {
   counters: Record<string, number>;
 };
 
-const EMAIL =
-  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 
 /** Rough international phone patterns — prefers over-redaction for the prototype. */
 const PHONE =
   /(?<![A-Z0-9])(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)\d{3,4}[\s.-]?\d{3,4}(?!\d)/g;
 
 /** Payment-card-like 13–19 digit runs with optional separators. */
-const CARD =
-  /\b(?:\d[ -]*?){13,19}\b/g;
+const CARD = /\b(?:\d[ -]*?){13,19}\b/g;
 
 /** Bearer/API-looking tokens and long opaque secrets. */
 const TOKEN =

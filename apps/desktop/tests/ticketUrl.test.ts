@@ -25,15 +25,19 @@ describe('parseTicketInput', () => {
   });
 
   it('accepts a supported Freshdesk ticket URL', () => {
-    expect(
-      parseTicketInput('https://company.freshdesk.com/a/tickets/8812', opts),
-    ).toEqual({ ok: true, ticketId: 8812, source: 'url' });
+    expect(parseTicketInput('https://company.freshdesk.com/a/tickets/8812', opts)).toEqual({
+      ok: true,
+      ticketId: 8812,
+      source: 'url',
+    });
   });
 
   it('accepts an allowlisted custom UI host', () => {
-    expect(
-      parseTicketInput('https://support.company.com/helpdesk/tickets/42', opts),
-    ).toEqual({ ok: true, ticketId: 42, source: 'url' });
+    expect(parseTicketInput('https://support.company.com/helpdesk/tickets/42', opts)).toEqual({
+      ok: true,
+      ticketId: 42,
+      source: 'url',
+    });
   });
 
   it('rejects the wrong hostname', () => {
@@ -50,26 +54,25 @@ describe('parseTicketInput', () => {
   });
 
   it('rejects URL credentials', () => {
-    const result = parseTicketInput(
-      'https://user:pass@company.freshdesk.com/a/tickets/8812',
-      opts,
-    );
+    const result = parseTicketInput('https://user:pass@company.freshdesk.com/a/tickets/8812', opts);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/username or password/i);
     }
   });
 
-  it('rejects unexpected schemes', () => {
-    const result = parseTicketInput('ftp://company.freshdesk.com/a/tickets/8812', opts);
-    expect(result.ok).toBe(false);
+  it('rejects unexpected schemes including http', () => {
+    const ftp = parseTicketInput('ftp://company.freshdesk.com/a/tickets/8812', opts);
+    expect(ftp.ok).toBe(false);
+    const http = parseTicketInput('http://company.freshdesk.com/a/tickets/8812', opts);
+    expect(http.ok).toBe(false);
+    if (!http.ok) {
+      expect(http.error).toMatch(/https/i);
+    }
   });
 
   it('rejects unknown ticket paths', () => {
-    const result = parseTicketInput(
-      'https://company.freshdesk.com/dashboard/8812',
-      opts,
-    );
+    const result = parseTicketInput('https://company.freshdesk.com/dashboard/8812', opts);
     expect(result.ok).toBe(false);
   });
 
@@ -79,10 +82,12 @@ describe('parseTicketInput', () => {
 });
 
 describe('extractFreshdeskHostname / buildTicketKey', () => {
-  it('extracts hostname from account URL', () => {
-    expect(extractFreshdeskHostname('https://company.freshdesk.com')).toBe(
-      'company.freshdesk.com',
-    );
+  it('extracts hostname from https account URL', () => {
+    expect(extractFreshdeskHostname('https://company.freshdesk.com')).toBe('company.freshdesk.com');
+  });
+
+  it('rejects http Freshdesk account URLs', () => {
+    expect(extractFreshdeskHostname('http://company.freshdesk.com')).toBeNull();
   });
 
   it('builds stable ticket keys', () => {

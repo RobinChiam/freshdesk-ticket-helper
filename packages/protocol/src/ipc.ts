@@ -4,31 +4,24 @@
  */
 import { z } from 'zod';
 
+import { IpcChannels, type IpcChannel } from './channels.js';
 import { ticketKeySchema } from './common.js';
 
-/** IPC channel names — keep narrow and explicit. */
-export const IpcChannels = {
-  settingsGet: 'settings:get',
-  settingsSave: 'settings:save',
-  secretsStatus: 'secrets:status',
-  freshdeskTest: 'freshdesk:test',
-  wssTest: 'wss:test',
-  ticketParse: 'ticket:parse',
-  ticketOpen: 'ticket:open',
-  ticketRecent: 'ticket:recent',
-  sanitizerPreview: 'sanitizer:preview',
-  chatSend: 'chat:send',
-  chatCancel: 'chat:cancel',
-  connectionStatus: 'connection:status',
-  connectionStatusChanged: 'connection:status-changed',
-  chatEvent: 'chat:event',
-  appInfo: 'app:info',
-} as const;
+export { IpcChannels, type IpcChannel };
 
-export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];
+/** Freshdesk account URL: empty (unset) or https only — API keys travel via Basic auth. */
+export const freshdeskAccountUrlSchema = z.union([
+  z.literal(''),
+  z
+    .string()
+    .url()
+    .refine((value) => value.startsWith('https://'), {
+      message: 'Freshdesk account URL must use https://',
+    }),
+]);
 
 export const nonSecretSettingsSchema = z.object({
-  freshdeskUrl: z.string().url().or(z.literal('')),
+  freshdeskUrl: freshdeskAccountUrlSchema,
   /** Optional additional UI hostnames allowed when parsing ticket links. */
   freshdeskUiHosts: z.array(z.string().min(1)).default([]),
   wssUrl: z.string().url().or(z.literal('')).or(z.string().startsWith('wss://')),
@@ -104,12 +97,7 @@ export const ticketParseResultSchema = z.discriminatedUnion('ok', [
 
 export type TicketParseResult = z.infer<typeof ticketParseResultSchema>;
 
-export const conversationRoleSchema = z.enum([
-  'requester',
-  'agent',
-  'system',
-  'unknown',
-]);
+export const conversationRoleSchema = z.enum(['requester', 'agent', 'system', 'unknown']);
 
 export const conversationMessageSchema = z.object({
   id: z.number().int(),
@@ -198,14 +186,36 @@ export const sanitizerPreviewInputSchema = z.object({
   includePrivateNotes: z.boolean(),
 });
 
-export const chatSendInputSchema = z.object({
-  ticketKey: ticketKeySchema,
-  contextRevision: z.number().int().positive(),
-  sanitizedContext: sanitizedContextSchema,
-  userMessage: z.string().min(1).max(16_000),
-  /** Client-side idempotency key to block duplicate submissions. */
-  clientRequestKey: z.string().uuid(),
-});
+/**
+ * Chat send identity invariant: outer ticketKey/contextRevision must match the
+ * sanitized context payload. Main-process validation enforces this even if the
+ * renderer briefly holds mismatched UI state during a ticket switch.
+ */
+export const chatSendInputSchema = z
+  .object({
+    ticketKey: ticketKeySchema,
+    contextRevision: z.number().int().positive(),
+    sanitizedContext: sanitizedContextSchema,
+    userMessage: z.string().min(1).max(16_000),
+    /** Client-side idempotency key to block duplicate submissions. */
+    clientRequestKey: z.string().uuid(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.ticketKey !== value.sanitizedContext.ticketKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'ticketKey must match sanitizedContext.ticketKey',
+        path: ['ticketKey'],
+      });
+    }
+    if (value.contextRevision !== value.sanitizedContext.contextRevision) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'contextRevision must match sanitizedContext.contextRevision',
+        path: ['contextRevision'],
+      });
+    }
+  });
 
 export type ChatSendInput = z.infer<typeof chatSendInputSchema>;
 

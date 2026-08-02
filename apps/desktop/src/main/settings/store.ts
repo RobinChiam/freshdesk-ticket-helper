@@ -2,10 +2,7 @@
  * Non-secret settings persisted in SQLite.
  * API keys and device tokens are handled exclusively by SecretVault.
  */
-import {
-  nonSecretSettingsSchema,
-  type NonSecretSettings,
-} from '@fth/protocol';
+import { nonSecretSettingsSchema, type NonSecretSettings } from '@fth/protocol';
 
 import type { AppDatabase } from '../../database/index.js';
 
