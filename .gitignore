@@ -40,3 +40,6 @@ apps/desktop/release/
 *.sqlite
 *.sqlite3
 *.db
+
+.prettierrc
+.prettierignore
