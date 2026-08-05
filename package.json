@@ -21,7 +21,7 @@
     "pack": "npm run build && npm run pack -w @fth/desktop"
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

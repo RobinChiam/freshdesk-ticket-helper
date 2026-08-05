@@ -4,8 +4,12 @@
 import type {
   AppInfo,
   ChatEvent,
+  ChatHistoryMessage,
   ChatSendInput,
-  ConnectionStatus,
+  CliCheckInput,
+  CliCheckResult,
+  CliLocateInput,
+  CliLocateResult,
   NonSecretSettings,
   SanitizedContext,
   SecretsStatus,
@@ -25,7 +29,9 @@ export type DesktopApi = {
     input: SettingsSaveInput,
   ) => Promise<{ settings: NonSecretSettings; secrets: SecretsStatus }>;
   testFreshdesk: () => Promise<TestConnectionResult>;
-  testWss: () => Promise<TestConnectionResult>;
+  testAi: () => Promise<TestConnectionResult>;
+  checkCli: (input: CliCheckInput) => Promise<CliCheckResult>;
+  locateCli: (input: CliLocateInput) => Promise<CliLocateResult>;
   parseTicket: (input: string) => Promise<TicketParseResult>;
   openTicket: (input: string) => Promise<TicketOpenResult>;
   listRecentTickets: () => Promise<RecentTicket[]>;
@@ -37,7 +43,7 @@ export type DesktopApi = {
     input: ChatSendInput,
   ) => Promise<{ ok: true; requestId: string } | { ok: false; error: string }>;
   cancelChat: (requestId: string) => Promise<{ ok: true }>;
-  getConnectionStatus: () => Promise<ConnectionStatus>;
-  onConnectionStatus: (handler: (status: ConnectionStatus) => void) => () => void;
+  listChatHistory: (ticketKey: string) => Promise<ChatHistoryMessage[]>;
+  clearChatHistory: (ticketKey: string) => Promise<{ ok: true; deleted: number }>;
   onChatEvent: (handler: (event: ChatEvent) => void) => () => void;
 };

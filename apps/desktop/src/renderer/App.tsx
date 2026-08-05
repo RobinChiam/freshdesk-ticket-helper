@@ -1,5 +1,5 @@
 /**
- * Root application shell: first-run settings, ticket workspace, and connection status.
+ * Root application shell: provider settings and ticket-scoped workspace.
  *
  * Ticket/context identity invariant: sanitized context and chat state are bound to the
  * current ticketKey. On ticket change we clear previous context immediately and only
@@ -9,7 +9,6 @@
 import { useEffect, useState } from 'react';
 
 import type {
-  ConnectionStatus,
   NonSecretSettings,
   RecentTicket,
   SanitizedContext,
@@ -18,7 +17,7 @@ import type {
 } from '@fth/protocol';
 
 import { ChatPanel } from './components/ChatPanel';
-import { ConnectionBadge } from './components/ConnectionBadge';
+import { isAiConfigured, ProviderBadge } from './components/ProviderBadge';
 import { RecentTickets } from './components/RecentTickets';
 import { SanitizerPreview } from './components/SanitizerPreview';
 import { SettingsForm } from './components/SettingsForm';
@@ -35,7 +34,6 @@ export function App() {
   const [settings, setSettings] = useState<NonSecretSettings | null>(null);
   const [secrets, setSecrets] = useState<SecretsStatus | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [connection, setConnection] = useState<ConnectionStatus | null>(null);
   const [ticketInput, setTicketInput] = useState('8812');
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [ticketError, setTicketError] = useState<string | null>(null);
@@ -44,21 +42,20 @@ export function App() {
   const [sanitized, setSanitized] = useState<SanitizedContext | null>(null);
   const [includePrivateNotes, setIncludePrivateNotes] = useState(false);
   const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [nextSettings, nextSecrets, nextConnection, nextRecent] = await Promise.all([
+        const [nextSettings, nextSecrets, nextRecent] = await Promise.all([
           window.desktopApi.getSettings(),
           window.desktopApi.getSecretsStatus(),
-          window.desktopApi.getConnectionStatus(),
           window.desktopApi.listRecentTickets(),
         ]);
         if (cancelled) return;
         setSettings(nextSettings);
         setSecrets(nextSecrets);
-        setConnection(nextConnection);
         setRecent(nextRecent);
         setIncludePrivateNotes(nextSettings.includePrivateNotesInAi);
         setShowSettings(!nextSettings.onboardingComplete);
@@ -70,12 +67,8 @@ export function App() {
       }
     })();
 
-    const offStatus = window.desktopApi.onConnectionStatus((status: ConnectionStatus) =>
-      setConnection(status),
-    );
     return () => {
       cancelled = true;
-      offStatus();
     };
   }, []);
 
@@ -86,13 +79,21 @@ export function App() {
     const ticketKey = ticket.ticketKey;
     let cancelled = false;
     (async () => {
-      const preview = await window.desktopApi.previewSanitizer({
-        ticket,
-        includePrivateNotes,
-      });
-      // Drop stale async results that belong to a previous ticket selection.
-      if (!cancelled && preview.ticketKey === ticketKey) {
-        setSanitized(preview);
+      try {
+        const preview = await window.desktopApi.previewSanitizer({
+          ticket,
+          includePrivateNotes,
+        });
+        // Drop stale async results that belong to a previous ticket selection.
+        if (!cancelled && preview.ticketKey === ticketKey) {
+          setSanitized(preview);
+          setPreviewError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSanitized(null);
+          setPreviewError('Could not prepare trusted AI context. Reopen the ticket and try again.');
+        }
       }
     })();
     return () => {
@@ -111,6 +112,7 @@ export function App() {
     const input = (rawInput ?? ticketInput).trim();
     setTicketLoading(true);
     setTicketError(null);
+    setPreviewError(null);
     // Clear previous ticket context/chat immediately to prevent cross-ticket leakage.
     setTicket(null);
     setSanitized(null);
@@ -134,11 +136,14 @@ export function App() {
     settings: NonSecretSettings;
     secrets: SecretsStatus;
   }): Promise<void> {
+    if (settings && settings.freshdeskUrl !== next.settings.freshdeskUrl) {
+      setTicket(null);
+      setSanitized(null);
+    }
     setSettings(next.settings);
     setSecrets(next.secrets);
     setIncludePrivateNotes(next.settings.includePrivateNotesInAi);
     setShowSettings(!next.settings.onboardingComplete);
-    setConnection(await window.desktopApi.getConnectionStatus());
   }
 
   if (loadState === 'loading') {
@@ -169,18 +174,12 @@ export function App() {
           <h1>Secure ticket context for AI assistance</h1>
         </div>
         <div className="header-actions">
-          <ConnectionBadge status={connection} />
+          <ProviderBadge settings={settings} secrets={secrets} />
           <button type="button" className="ghost" onClick={() => setShowSettings((v) => !v)}>
             {showSettings ? 'Back to workspace' : 'Settings'}
           </button>
         </div>
       </header>
-
-      {connection?.mockMode ? (
-        <div className="mock-banner" role="status">
-          Mock AI broker is active — responses are simulated and not from the VPS.
-        </div>
-      ) : null}
 
       {secrets.limitation ? (
         <StatusBanner
@@ -253,8 +252,6 @@ export function App() {
                   ticket={ticket}
                   includePrivateNotes={includePrivateNotes}
                   onIncludePrivateNotesChange={async (value) => {
-                    const previous = includePrivateNotes;
-                    setIncludePrivateNotes(value);
                     setPreferenceError(null);
                     try {
                       const saved = await window.desktopApi.saveSettings({
@@ -264,7 +261,6 @@ export function App() {
                       setSettings(saved.settings);
                       setIncludePrivateNotes(saved.settings.includePrivateNotesInAi);
                     } catch (error) {
-                      setIncludePrivateNotes(previous);
                       setPreferenceError(
                         error instanceof Error
                           ? error.message
@@ -280,12 +276,19 @@ export function App() {
                     message={preferenceError}
                   />
                 ) : null}
+                {previewError ? (
+                  <StatusBanner
+                    tone="error"
+                    title="Context preparation failed"
+                    message={previewError}
+                  />
+                ) : null}
                 <SanitizerPreview context={sanitizedForCurrentTicket} />
                 <ChatPanel
                   key={ticket.ticketKey}
                   ticketKey={ticket.ticketKey}
                   sanitized={sanitizedForCurrentTicket}
-                  connection={connection}
+                  aiConfigured={isAiConfigured(settings, secrets)}
                 />
               </TicketWorkspace>
             ) : null}

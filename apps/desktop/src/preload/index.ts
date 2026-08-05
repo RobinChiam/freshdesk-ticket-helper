@@ -10,7 +10,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 // Relative source import so electron-vite inlines constants into the preload CJS bundle.
 import { IpcChannels } from '../../../../packages/protocol/src/channels';
-import type { ChatEvent, ConnectionStatus } from '@fth/protocol';
+import type { ChatEvent } from '@fth/protocol';
 
 import type { DesktopApi } from './api-types';
 
@@ -20,19 +20,17 @@ const api: DesktopApi = {
   getSettings: () => ipcRenderer.invoke(IpcChannels.settingsGet),
   saveSettings: (input) => ipcRenderer.invoke(IpcChannels.settingsSave, input),
   testFreshdesk: () => ipcRenderer.invoke(IpcChannels.freshdeskTest),
-  testWss: () => ipcRenderer.invoke(IpcChannels.wssTest),
+  testAi: () => ipcRenderer.invoke(IpcChannels.aiTest),
+  checkCli: (input) => ipcRenderer.invoke(IpcChannels.cliCheck, input),
+  locateCli: (input) => ipcRenderer.invoke(IpcChannels.cliLocate, input),
   parseTicket: (input) => ipcRenderer.invoke(IpcChannels.ticketParse, { input }),
   openTicket: (input) => ipcRenderer.invoke(IpcChannels.ticketOpen, { input }),
   listRecentTickets: () => ipcRenderer.invoke(IpcChannels.ticketRecent),
   previewSanitizer: (args) => ipcRenderer.invoke(IpcChannels.sanitizerPreview, args),
   sendChat: (input) => ipcRenderer.invoke(IpcChannels.chatSend, input),
   cancelChat: (requestId) => ipcRenderer.invoke(IpcChannels.chatCancel, { requestId }),
-  getConnectionStatus: () => ipcRenderer.invoke(IpcChannels.connectionStatus),
-  onConnectionStatus: (handler) => {
-    const listener = (_event: IpcRendererEvent, status: ConnectionStatus) => handler(status);
-    ipcRenderer.on(IpcChannels.connectionStatusChanged, listener);
-    return () => ipcRenderer.removeListener(IpcChannels.connectionStatusChanged, listener);
-  },
+  listChatHistory: (ticketKey) => ipcRenderer.invoke(IpcChannels.chatHistoryList, { ticketKey }),
+  clearChatHistory: (ticketKey) => ipcRenderer.invoke(IpcChannels.chatHistoryClear, { ticketKey }),
   onChatEvent: (handler) => {
     const listener = (_event: IpcRendererEvent, chatEvent: ChatEvent) => handler(chatEvent);
     ipcRenderer.on(IpcChannels.chatEvent, listener);

@@ -16,7 +16,7 @@ export type BuildSanitizedContextOptions = {
 };
 
 /**
- * Build the exact context payload that may later be sent over WSS.
+ * Build the exact context payload that may later be sent to the selected AI provider.
  * Private notes are visible locally but excluded from AI context unless enabled.
  */
 export function buildSanitizedContext(options: BuildSanitizedContextOptions): SanitizedContext {
@@ -58,6 +58,12 @@ export function buildSanitizedContext(options: BuildSanitizedContextOptions): Sa
     warnings,
     previewText,
   };
+}
+
+/** Sanitize agent-authored chat text before persistence or provider transmission. */
+export function sanitizeUserMessage(raw: string): string {
+  const redaction: RedactionState = { map: {}, counters: {} };
+  return sanitizeMessageText(raw, redaction);
 }
 
 function sanitizeConversation(

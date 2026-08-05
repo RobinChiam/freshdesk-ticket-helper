@@ -41,6 +41,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -142,6 +143,15 @@ input[type='password'] {
   color: var(--ink);
 }
 
+select {
+  min-width: 220px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--ink);
+}
+
 button {
   border: 0;
   border-radius: 999px;
@@ -190,21 +200,6 @@ button.ghost {
   padding: 6px 12px;
   background: #fff;
   font-size: 0.85rem;
-}
-
-.badge-mock {
-  background: var(--mock-bg);
-  color: var(--mock);
-  border-color: #f0c48a;
-}
-
-.mock-banner {
-  background: var(--mock-bg);
-  color: var(--mock);
-  border: 1px solid #f0c48a;
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-weight: 600;
 }
 
 .banner {

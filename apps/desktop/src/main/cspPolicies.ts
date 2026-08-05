@@ -24,7 +24,7 @@ export const DEVELOPMENT_RENDERER_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self' data:",
-  "connect-src 'self' ws: wss: http: https:",
+  "connect-src 'self' ws: http:",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

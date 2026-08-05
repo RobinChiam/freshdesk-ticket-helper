@@ -1,45 +1,60 @@
 /**
  * IPC handler registration — every channel is schema-validated and sender-checked.
  * Handlers never return raw secrets to the renderer.
+ * CLI execution stays in main; preload never receives spawn/exec or raw process output.
  */
-import { ipcMain, app, type BrowserWindow } from 'electron';
+import { dialog, ipcMain, app, type BrowserWindow } from 'electron';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import {
   IpcChannels,
   chatCancelInputSchema,
+  chatHistoryInputSchema,
   chatSendInputSchema,
+  cliCheckInputSchema,
+  cliLocateInputSchema,
+  logicalProviderForAdapter,
   nonSecretSettingsSchema,
   sanitizerPreviewInputSchema,
   settingsSaveInputSchema,
   ticketParseInputSchema,
-  type ConnectionStatus,
   type NonSecretSettings,
   type TicketDetail,
 } from '@fth/protocol';
 
 import type { AppDatabase } from '../../database/index.js';
+import type { AiProviderService } from '../../ai/providerService.js';
+import { sanitizeProviderError, type ProviderConfig } from '../../ai/providerRuntime.js';
+import { checkCliInstallation } from '../../ai/cli/preflight.js';
+import { createNodeProcessRunner } from '../../ai/cli/processRunner.js';
+import { validateExecutableOverride } from '../../ai/cli/locator.js';
+import { getAdapterDefinition } from '../../ai/cli/registry.js';
+import { CliAdapterError } from '../../ai/cli/types.js';
 import {
   FreshdeskApiError,
   FreshdeskClient,
   sanitizeFreshdeskError,
 } from '../../freshdesk/client.js';
 import { extractFreshdeskHostname, parseTicketInput } from '../../freshdesk/ticketUrl.js';
-import { buildSanitizedContext } from '../../sanitizer/index.js';
-import type { AiBrokerClient } from '../../websocket/client.js';
+import { sanitizeUserMessage } from '../../sanitizer/index.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { loadSettings, saveSettings } from '../settings/store.js';
+import { TrustedTicketState } from '../trustedTicketState.js';
 import { withTrustedSender } from './senderGuard.js';
 
 export type AppContext = {
   db: AppDatabase;
   vault: SecretVault;
-  broker: AiBrokerClient;
+  ai: AiProviderService;
   getMainWindow: () => BrowserWindow | null;
 };
 
+const cliRunner = createNodeProcessRunner();
+
 /** Register all typed IPC handlers once during app startup. */
 export function registerIpcHandlers(ctx: AppContext): void {
+  const trustedTicketState = new TrustedTicketState();
   const guard = <Args extends unknown[], Result>(
     handler: (event: Electron.IpcMainInvokeEvent, ...args: Args) => Result | Promise<Result>,
   ) => withTrustedSender(ctx.getMainWindow, handler);
@@ -50,7 +65,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
       name: 'Freshdesk Ticket Helper',
       version: app.getVersion(),
       isPackaged: app.isPackaged,
-      mockBrokerDefault: true,
     })),
   );
 
@@ -67,16 +81,12 @@ export function registerIpcHandlers(ctx: AppContext): void {
   ipcMain.handle(
     IpcChannels.settingsSave,
     guard(async (_event, raw: unknown) => {
+      const previousSettings = loadSettings(ctx.db);
       const input = settingsSaveInputSchema.parse(raw);
-      const {
-        freshdeskApiKey,
-        wssDeviceToken,
-        clearFreshdeskApiKey,
-        clearWssDeviceToken,
-        ...nonSecret
-      } = input;
+      const { freshdeskApiKey, aiApiKey, clearFreshdeskApiKey, clearAiApiKey, ...nonSecret } =
+        input;
 
-      const settings = saveSettings(ctx.db, nonSecretSettingsSchema.parse(nonSecret));
+      const settings = nonSecretSettingsSchema.parse(nonSecret);
 
       // Secrets are vault-only; empty strings mean "leave unchanged".
       if (clearFreshdeskApiKey) {
@@ -85,13 +95,40 @@ export function registerIpcHandlers(ctx: AppContext): void {
         ctx.vault.setFreshdeskApiKey(freshdeskApiKey.trim());
       }
 
-      if (clearWssDeviceToken) {
-        ctx.vault.clearWssDeviceToken();
-      } else if (wssDeviceToken && wssDeviceToken.trim()) {
-        ctx.vault.setWssDeviceToken(wssDeviceToken.trim());
+      // CLI mode never requires or saves an API key; ignore aiApiKey for subscription-cli.
+      if (settings.aiConnection.kind === 'api-key') {
+        if (clearAiApiKey) {
+          ctx.vault.clearAiApiKey(settings.aiConnection.provider);
+        } else if (aiApiKey && aiApiKey.trim()) {
+          ctx.vault.setAiApiKey(settings.aiConnection.provider, aiApiKey.trim());
+        }
       }
 
-      await reconfigureBroker(ctx, settings);
+      // Re-validate any executable override in main before persisting.
+      if (
+        settings.aiConnection.kind === 'subscription-cli' &&
+        settings.aiConnection.executablePath.trim()
+      ) {
+        try {
+          settings.aiConnection.executablePath = validateExecutableOverride(
+            settings.aiConnection.adapter,
+            settings.aiConnection.executablePath.trim(),
+          );
+        } catch (error) {
+          throw new Error(
+            error instanceof CliAdapterError
+              ? error.message
+              : 'The selected CLI executable is not allowed.',
+          );
+        }
+      }
+
+      saveSettings(ctx.db, settings);
+      if (settings.freshdeskUrl !== previousSettings.freshdeskUrl) {
+        trustedTicketState.clear();
+      } else if (settings.includePrivateNotesInAi !== previousSettings.includePrivateNotesInAi) {
+        trustedTicketState.clearContexts();
+      }
       return {
         settings,
         secrets: ctx.vault.getStatus(),
@@ -123,11 +160,63 @@ export function registerIpcHandlers(ctx: AppContext): void {
   );
 
   ipcMain.handle(
-    IpcChannels.wssTest,
+    IpcChannels.aiTest,
     guard(async () => {
       const settings = loadSettings(ctx.db);
-      await reconfigureBroker(ctx, settings);
-      return ctx.broker.testConnection();
+      const configured = getProviderConfig(settings, ctx.vault);
+      if (!configured.ok) return configured;
+      try {
+        await ctx.ai.test(configured.config);
+        return {
+          ok: true as const,
+          message:
+            configured.config.kind === 'subscription-cli'
+              ? 'CLI subscription connection test succeeded.'
+              : 'AI provider authentication and model request succeeded.',
+        };
+      } catch (error) {
+        return { ok: false as const, error: sanitizeProviderError(error).error };
+      }
+    }),
+  );
+
+  ipcMain.handle(
+    IpcChannels.cliCheck,
+    guard(async (_event, raw: unknown) => {
+      const input = cliCheckInputSchema.parse(raw);
+      return checkCliInstallation(input.adapter, input.executablePath, { runner: cliRunner });
+    }),
+  );
+
+  ipcMain.handle(
+    IpcChannels.cliLocate,
+    guard(async (_event, raw: unknown) => {
+      const input = cliLocateInputSchema.parse(raw);
+      const def = getAdapterDefinition(input.adapter);
+      const win = ctx.getMainWindow();
+      const options = {
+        title: `Locate ${def.displayName}`,
+        properties: ['openFile' as const],
+        defaultPath: homedir(),
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths[0]) {
+        return { ok: false as const, cancelled: true, error: 'No executable selected.' };
+      }
+      try {
+        const executablePath = validateExecutableOverride(input.adapter, result.filePaths[0]);
+        return { ok: true as const, adapter: input.adapter, executablePath };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error:
+            error instanceof CliAdapterError
+              ? error.message
+              : 'The selected file is not an allowed CLI executable.',
+        };
+      }
     }),
   );
 
@@ -156,6 +245,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       // Offline demo ticket so the UI can be exercised without real Freshdesk credentials.
       if (input.trim().toLowerCase() === 'demo') {
         const ticket = buildDemoTicket();
+        trustedTicketState.rememberTicket(ticket);
         ctx.db.upsertRecentTicket({
           ticketKey: ticket.ticketKey,
           ticketId: ticket.id,
@@ -191,6 +281,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
           apiKey,
         });
         const ticket = await client.fetchTicket(parsed.ticketId);
+        trustedTicketState.rememberTicket(ticket);
         ctx.db.upsertRecentTicket({
           ticketKey: ticket.ticketKey,
           ticketId: ticket.id,
@@ -213,12 +304,18 @@ export function registerIpcHandlers(ctx: AppContext): void {
     IpcChannels.sanitizerPreview,
     guard(async (_event, raw: unknown) => {
       const input = sanitizerPreviewInputSchema.parse(raw);
+      const settings = loadSettings(ctx.db);
+      if (!trustedTicketState.hasTicket(input.ticket.ticketKey)) {
+        throw new Error('Reopen the ticket before preparing AI context.');
+      }
       const revision = ctx.db.bumpContextRevision(input.ticket.ticketKey);
-      return buildSanitizedContext({
-        ticket: input.ticket,
-        includePrivateNotes: input.includePrivateNotes,
-        contextRevision: revision,
-      });
+      const context = trustedTicketState.buildContext(
+        input.ticket.ticketKey,
+        settings.includePrivateNotesInAi,
+        revision,
+      );
+      if (!context) throw new Error('Reopen the ticket before preparing AI context.');
+      return context;
     }),
   );
 
@@ -228,23 +325,38 @@ export function registerIpcHandlers(ctx: AppContext): void {
       // Schema enforces ticketKey/contextRevision identity with sanitizedContext.
       const input = chatSendInputSchema.parse(raw);
       const settings = loadSettings(ctx.db);
-      await reconfigureBroker(ctx, settings);
+      const trustedContext = trustedTicketState.getContext(input.ticketKey, input.contextRevision);
+      if (!trustedContext) {
+        return {
+          ok: false as const,
+          error: 'The ticket context is stale. Reopen the ticket before chatting.',
+        };
+      }
 
       // Defense in depth: never send private notes when the toggle is off.
       // Private notes are only present when Freshdesk returned them for this API key.
-      if (!settings.includePrivateNotesInAi && input.sanitizedContext.includePrivateNotes) {
+      if (!settings.includePrivateNotesInAi && trustedContext.includePrivateNotes) {
         return {
           ok: false as const,
           error: 'Private notes are disabled in settings but present in the sanitized context.',
         };
       }
 
-      return ctx.broker.sendChat({
-        ticketKey: input.ticketKey,
-        context: input.sanitizedContext,
-        userMessage: input.userMessage,
-        clientRequestKey: input.clientRequestKey,
-      });
+      const configured = getProviderConfig(settings, ctx.vault);
+      if (!configured.ok) return configured;
+      const sanitizedQuestion = sanitizeUserMessage(input.userMessage);
+      if (!sanitizedQuestion)
+        return { ok: false as const, error: 'Enter a message with visible text.' };
+      try {
+        // Replace renderer-supplied context with the main-process copy before any network request.
+        const trustedInput = { ...input, sanitizedContext: trustedContext };
+        return {
+          ok: true as const,
+          ...ctx.ai.start(trustedInput, configured.config, sanitizedQuestion),
+        };
+      } catch {
+        return { ok: false as const, error: 'This chat request could not be started.' };
+      }
     }),
   );
 
@@ -252,23 +364,26 @@ export function registerIpcHandlers(ctx: AppContext): void {
     IpcChannels.chatCancel,
     guard(async (_event, raw: unknown) => {
       const input = chatCancelInputSchema.parse(raw);
-      ctx.broker.cancel(input.requestId);
+      ctx.ai.cancel(input.requestId);
       return { ok: true as const };
     }),
   );
 
   ipcMain.handle(
-    IpcChannels.connectionStatus,
-    guard(async () => ctx.broker.getStatus()),
+    IpcChannels.chatHistoryList,
+    guard(async (_event, raw: unknown) => {
+      const { ticketKey } = chatHistoryInputSchema.parse(raw);
+      return ctx.db.listChatMessages(ticketKey, 200);
+    }),
   );
-}
 
-export function broadcastConnectionStatus(
-  getMainWindow: () => BrowserWindow | null,
-  status: ConnectionStatus,
-): void {
-  const win = getMainWindow();
-  win?.webContents.send(IpcChannels.connectionStatusChanged, status);
+  ipcMain.handle(
+    IpcChannels.chatHistoryClear,
+    guard(async (_event, raw: unknown) => {
+      const { ticketKey } = chatHistoryInputSchema.parse(raw);
+      return { ok: true as const, deleted: ctx.db.clearChatMessages(ticketKey) };
+    }),
+  );
 }
 
 export function broadcastChatEvent(
@@ -279,15 +394,41 @@ export function broadcastChatEvent(
   win?.webContents.send(IpcChannels.chatEvent, event);
 }
 
-async function reconfigureBroker(ctx: AppContext, settings: NonSecretSettings): Promise<void> {
-  const token = ctx.vault.getWssDeviceToken() ?? '';
-  await ctx.broker.configure({
-    url: settings.wssUrl,
-    deviceToken: token,
-    useMockBroker: settings.useMockBroker,
-    allowInsecureWs: !app.isPackaged,
-    clientVersion: app.getVersion(),
-  });
+export function getProviderConfig(
+  settings: NonSecretSettings,
+  vault: SecretVault,
+): { ok: true; config: ProviderConfig } | { ok: false; error: string } {
+  const connection = settings.aiConnection;
+  if (connection.kind === 'subscription-cli') {
+    return {
+      ok: true,
+      config: {
+        kind: 'subscription-cli',
+        adapter: connection.adapter,
+        logicalProviderId: logicalProviderForAdapter(connection.adapter),
+        modelId: connection.modelId.trim(),
+        executablePath: connection.executablePath.trim(),
+      },
+    };
+  }
+
+  const modelId = connection.modelId.trim();
+  if (!modelId) return { ok: false, error: 'Configure an AI model ID first.' };
+  const apiKey = vault.getAiApiKey(connection.provider);
+  if (!apiKey) return { ok: false, error: 'Store an API key for the selected AI provider first.' };
+  if (connection.provider === 'openai-compatible' && !connection.customBaseUrl) {
+    return { ok: false, error: 'Configure an HTTPS base URL for the custom provider.' };
+  }
+  return {
+    ok: true,
+    config: {
+      kind: 'api-key',
+      providerId: connection.provider,
+      modelId,
+      customBaseUrl: connection.customBaseUrl,
+      apiKey,
+    },
+  };
 }
 
 function mapTicketOpenError(error: unknown): {
@@ -339,7 +480,7 @@ export function buildDemoTicket(hostname = 'demo.freshdesk.com'): TicketDetail {
       {
         id: 2,
         bodyText:
-          'INTERNAL: User may be on plan Pro. Auth token sk-demo-aaaaaaaaaaaaaaaaaaaa observed in logs — do not share.',
+          'INTERNAL: User may be on plan Pro. Bearer DEMO_TOKEN_VALUE_1234567890 observed in logs — do not share.',
         createdAt: now,
         private: true,
         incoming: false,

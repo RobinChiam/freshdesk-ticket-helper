@@ -1,6 +1,6 @@
 /**
  * Local SQLite persistence for non-secret application state.
- * Secrets (API keys, device tokens) must never be written here.
+ * Secrets (Freshdesk and AI provider API keys) must never be written here.
  *
  * Uses Node's built-in node:sqlite (DatabaseSync) to avoid native addon rebuilds.
  */
@@ -8,7 +8,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { RecentTicket } from '@fth/protocol';
+import type { ChatHistoryMessage, RecentTicket } from '@fth/protocol';
 
 import { MIGRATIONS } from './migrations.js';
 
@@ -16,10 +16,14 @@ export type AppDatabase = {
   db: DatabaseSync;
   getSetting: (key: string) => string | null;
   setSetting: (key: string, value: string) => void;
+  deleteSetting: (key: string) => void;
   listRecentTickets: (limit?: number) => RecentTicket[];
   upsertRecentTicket: (ticket: RecentTicket) => void;
   getContextRevision: (ticketKey: string) => number;
   bumpContextRevision: (ticketKey: string) => number;
+  appendChatMessage: (message: ChatHistoryMessage) => void;
+  listChatMessages: (ticketKey: string, limit?: number) => ChatHistoryMessage[];
+  clearChatMessages: (ticketKey: string) => number;
   close: () => void;
 };
 
@@ -43,6 +47,9 @@ export function openAppDatabase(filePath: string): AppDatabase {
          VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       ).run(key, value, new Date().toISOString());
+    },
+    deleteSetting(key) {
+      db.prepare('DELETE FROM settings WHERE key = ?').run(key);
     },
     listRecentTickets(limit = 20) {
       const rows = db
@@ -81,7 +88,7 @@ export function openAppDatabase(filePath: string): AppDatabase {
       return row?.revision ?? 0;
     },
     bumpContextRevision(ticketKey) {
-      // Atomic bump so each sanitizer/WSS sync gets a monotonically increasing revision.
+      // Atomic bump binds each AI request to the exact sanitizer preview the user reviewed.
       db.prepare(
         `INSERT INTO context_revisions (ticket_key, revision, updated_at)
          VALUES (?, 1, ?)
@@ -90,6 +97,69 @@ export function openAppDatabase(filePath: string): AppDatabase {
            updated_at = excluded.updated_at`,
       ).run(ticketKey, new Date().toISOString());
       return this.getContextRevision(ticketKey);
+    },
+    appendChatMessage(message) {
+      db.prepare(
+        `INSERT INTO chat_messages
+           (id, ticket_key, role, text, provider_id, model_id, connection_kind, cli_adapter_id,
+            context_revision, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        message.id,
+        message.ticketKey,
+        message.role,
+        message.text,
+        message.providerId,
+        message.modelId,
+        message.connectionKind ?? 'api-key',
+        message.cliAdapterId ?? null,
+        message.contextRevision,
+        message.createdAt,
+      );
+    },
+    listChatMessages(ticketKey, limit = 200) {
+      const safeLimit = Math.min(Math.max(limit, 1), 500);
+      const rows = db
+        .prepare(
+          `SELECT id, ticket_key, role, text, provider_id, model_id, connection_kind, cli_adapter_id,
+                  context_revision, created_at
+         FROM (
+           SELECT rowid AS message_order, id, ticket_key, role, text,
+                  provider_id, model_id, connection_kind, cli_adapter_id,
+                  context_revision, created_at
+           FROM chat_messages WHERE ticket_key = ?
+           ORDER BY rowid DESC LIMIT ?
+         ) ORDER BY message_order ASC`,
+        )
+        .all(ticketKey, safeLimit) as Array<{
+        id: string;
+        ticket_key: string;
+        role: 'user' | 'assistant';
+        text: string;
+        provider_id: ChatHistoryMessage['providerId'];
+        model_id: string;
+        connection_kind: ChatHistoryMessage['connectionKind'] | null;
+        cli_adapter_id: ChatHistoryMessage['cliAdapterId'] | null;
+        context_revision: number;
+        created_at: string;
+      }>;
+      return rows.map((row) => ({
+        id: row.id,
+        ticketKey: row.ticket_key,
+        role: row.role,
+        text: row.text,
+        providerId: row.provider_id,
+        modelId: row.model_id,
+        connectionKind: row.connection_kind ?? 'api-key',
+        ...(row.cli_adapter_id ? { cliAdapterId: row.cli_adapter_id } : {}),
+        contextRevision: row.context_revision,
+        createdAt: row.created_at,
+      }));
+    },
+    clearChatMessages(ticketKey) {
+      return Number(
+        db.prepare('DELETE FROM chat_messages WHERE ticket_key = ?').run(ticketKey).changes,
+      );
     },
     close() {
       db.close();

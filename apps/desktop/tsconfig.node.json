@@ -8,11 +8,11 @@
   },
   "include": [
     "src/main/**/*.ts",
+    "src/ai/**/*.ts",
     "src/preload/**/*.ts",
     "src/database/**/*.ts",
     "src/freshdesk/**/*.ts",
     "src/sanitizer/**/*.ts",
-    "src/websocket/**/*.ts",
     "src/renderer/ticketContextGuard.ts",
     "tests/**/*.ts",
     "electron.vite.config.ts",

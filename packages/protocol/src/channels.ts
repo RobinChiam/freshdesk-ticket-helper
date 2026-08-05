@@ -1,22 +1,22 @@
-/**
- * Schema-free IPC channel constants for sandboxed preload.
- * This module must never import zod or any other npm runtime dependency —
- * sandboxed preload cannot require() unresolved node_modules packages.
- */
+/** Channel constants safe to inline into the sandboxed preload bundle. */
 export const IpcChannels = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   secretsStatus: 'secrets:status',
   freshdeskTest: 'freshdesk:test',
-  wssTest: 'wss:test',
+  aiTest: 'ai:test',
+  /** Main-process CLI discovery/auth preflight — never exposes spawn or raw process output. */
+  cliCheck: 'cli:check',
+  /** Native file picker + path validation for optional CLI executable override. */
+  cliLocate: 'cli:locate',
   ticketParse: 'ticket:parse',
   ticketOpen: 'ticket:open',
   ticketRecent: 'ticket:recent',
   sanitizerPreview: 'sanitizer:preview',
   chatSend: 'chat:send',
   chatCancel: 'chat:cancel',
-  connectionStatus: 'connection:status',
-  connectionStatusChanged: 'connection:status-changed',
+  chatHistoryList: 'chat:history:list',
+  chatHistoryClear: 'chat:history:clear',
   chatEvent: 'chat:event',
   appInfo: 'app:info',
 } as const;
